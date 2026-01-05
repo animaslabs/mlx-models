@@ -9,6 +9,12 @@ format matching the mlx-community format:
 - LSTM biases are combined into single bias tensors
 - Optional quantization to 4-bit or 8-bit using MLX's native quantization format
 
+Optimizations for quantized models:
+- Pointwise convs (kernel_size=1) are stored as 2D matrices and quantized
+- LSTM weights are quantized
+- Embeddings are quantized
+- Scales/biases use float16 to save space
+
 Usage:
     python scripts/convert_parakeet_weights.py <checkpoint_path> <output_path>
     python scripts/convert_parakeet_weights.py <checkpoint_path> <output_path> --quantize 8
@@ -167,7 +173,24 @@ def is_conv1d_weight(key: str, shape: Tuple[int, ...]) -> bool:
     return False
 
 
-def should_quantize_tensor(key: str, shape: Tuple[int, ...]) -> bool:
+def is_pointwise_conv1d(key: str, shape: Tuple[int, ...]) -> bool:
+    """
+    Check if a weight tensor is a pointwise (kernel_size=1) Conv1d.
+    These can be reshaped to 2D and quantized as linear layers.
+    
+    PyTorch shape: (out_channels, in_channels, 1)
+    """
+    if len(shape) != 3:
+        return False
+    if "pointwise_conv" not in key:
+        return False
+    if ".weight" not in key:
+        return False
+    # Kernel size is the last dimension in PyTorch format
+    return shape[2] == 1
+
+
+def should_quantize_tensor(key: str, shape: Tuple[int, ...], quantize_convs: bool = False) -> bool:
     """
     Determine if a tensor should be quantized using MLX native quantization.
     
@@ -175,8 +198,7 @@ def should_quantize_tensor(key: str, shape: Tuple[int, ...]) -> bool:
     - Small tensors (< 1024 elements)
     - Biases (1D tensors)
     - Layer norms and batch norms
-    - Conv weights (3D/4D tensors) - MLX doesn't have quantized conv ops
-    - Positional biases and embeddings
+    - Conv weights (3D/4D tensors) - unless quantize_convs is True for pointwise
     - Tensors where input_dim < group_size (can't be quantized)
     """
     # Only quantize 2D tensors (Linear weights)
@@ -194,12 +216,13 @@ def should_quantize_tensor(key: str, shape: Tuple[int, ...]) -> bool:
     if input_dim < QUANTIZE_GROUP_SIZE:
         return False
     
-    # Skip normalization layers, biases, and positional parameters
+    # Skip normalization layers and biases
     skip_patterns = [
         "layer_norm", "layernorm", "ln_", "_ln",
         "batch_norm", "batchnorm", "bn_", "_bn",
         ".bias", ".running_mean", ".running_var",
-        "pos_bias", "positional", "embed",  # Skip positional biases
+        "pos_bias",  # Skip positional biases (small)
+        "embed",  # Skip embeddings (would need QuantizedEmbedding support in loader)
     ]
     key_lower = key.lower()
     for pattern in skip_patterns:
@@ -255,7 +278,7 @@ def quantize_tensor_mlx(
     )
 
 
-def convert_lstm_weights(state_dict: Dict[str, Any]) -> Dict[str, np.ndarray]:
+def convert_lstm_weights(state_dict: Dict[str, Any], quantize_bits: Optional[int] = None, group_size: int = QUANTIZE_GROUP_SIZE) -> Dict[str, np.ndarray]:
     """
     Convert PyTorch LSTM weights to MLX format.
     
@@ -263,9 +286,14 @@ def convert_lstm_weights(state_dict: Dict[str, Any]) -> Dict[str, np.ndarray]:
         weight_ih_l0, weight_hh_l0, bias_ih_l0, bias_hh_l0
         weight_ih_l1, weight_hh_l1, bias_ih_l1, bias_hh_l1
     
-    MLX format:
+    MLX format (non-quantized):
         0.Wx, 0.Wh, 0.bias
         1.Wx, 1.Wh, 1.bias
+    
+    MLX format (quantized) - uses .weight suffix for compatibility with load_maybe_quantized_linear:
+        0.Wx.weight, 0.Wx.weight.scales, 0.Wx.weight.biases
+        0.Wh.weight, 0.Wh.weight.scales, 0.Wh.weight.biases
+        0.bias
     """
     try:
         import torch
@@ -274,6 +302,7 @@ def convert_lstm_weights(state_dict: Dict[str, Any]) -> Dict[str, np.ndarray]:
     
     result = {}
     prefix = "decoder.prediction.dec_rnn.lstm"
+    quantized_count = 0
     
     # Find all LSTM layers
     layer_indices = set()
@@ -299,9 +328,25 @@ def convert_lstm_weights(state_dict: Dict[str, Any]) -> Dict[str, np.ndarray]:
         if isinstance(weight_hh, torch.Tensor):
             weight_hh = weight_hh.detach().cpu().numpy()
         
-        # MLX naming: Wx for input weights, Wh for hidden weights
-        result[f"{prefix}.{layer_idx}.Wx"] = weight_ih
-        result[f"{prefix}.{layer_idx}.Wh"] = weight_hh
+        # Quantize LSTM weights if requested
+        if quantize_bits is not None and weight_ih.shape[1] >= group_size:
+            # Quantize Wx (input weights) - use .weight suffix for loader compatibility
+            q_wx, s_wx, b_wx = quantize_tensor_mlx(weight_ih, quantize_bits, group_size)
+            result[f"{prefix}.{layer_idx}.Wx.weight"] = q_wx
+            result[f"{prefix}.{layer_idx}.Wx.weight.scales"] = s_wx.astype(np.float16)
+            result[f"{prefix}.{layer_idx}.Wx.weight.biases"] = b_wx.astype(np.float16)
+            quantized_count += 1
+            
+            # Quantize Wh (hidden weights) - use .weight suffix for loader compatibility
+            q_wh, s_wh, b_wh = quantize_tensor_mlx(weight_hh, quantize_bits, group_size)
+            result[f"{prefix}.{layer_idx}.Wh.weight"] = q_wh
+            result[f"{prefix}.{layer_idx}.Wh.weight.scales"] = s_wh.astype(np.float16)
+            result[f"{prefix}.{layer_idx}.Wh.weight.biases"] = b_wh.astype(np.float16)
+            quantized_count += 1
+        else:
+            # Store as float32 (non-quantized uses simple key names)
+            result[f"{prefix}.{layer_idx}.Wx"] = weight_ih
+            result[f"{prefix}.{layer_idx}.Wh"] = weight_hh
         
         # Combine biases (PyTorch has separate ih and hh biases)
         if bias_ih is not None and bias_hh is not None:
@@ -315,6 +360,9 @@ def convert_lstm_weights(state_dict: Dict[str, Any]) -> Dict[str, np.ndarray]:
             if isinstance(bias_ih, torch.Tensor):
                 bias_ih = bias_ih.detach().cpu().numpy()
             result[f"{prefix}.{layer_idx}.bias"] = bias_ih
+    
+    if quantized_count > 0:
+        print(f"Quantized {quantized_count} LSTM weight tensors")
     
     return result
 
@@ -340,13 +388,14 @@ def convert_weights_to_mlx(
     result = {}
     conv2d_count = 0
     conv1d_count = 0
+    pointwise_quantized_count = 0
     skipped_count = 0
     quantized_count = 0
     
-    # First, handle LSTM weights specially
-    lstm_weights = convert_lstm_weights(state_dict)
+    # First, handle LSTM weights specially (with optional quantization)
+    lstm_weights = convert_lstm_weights(state_dict, quantize_bits, group_size)
     result.update(lstm_weights)
-    print(f"Converted {len(lstm_weights)} LSTM tensors")
+    print(f"Converted {len([k for k in lstm_weights.keys() if not k.endswith('.scales') and not k.endswith('.biases')])} LSTM tensors")
     
     # Process remaining weights
     for key, value in state_dict.items():
@@ -376,7 +425,27 @@ def convert_weights_to_mlx(
             arr = transpose_conv2d(arr)
             conv2d_count += 1
         
-        # Transpose Conv1d weights: OIK -> OKI
+        # Handle pointwise Conv1d weights (kernel_size=1)
+        # These can be quantized as 2D matrices (like linear layers)
+        elif is_pointwise_conv1d(key, shape):
+            # Reshape from (out_channels, in_channels, 1) to (out_channels, in_channels)
+            arr_2d = arr.squeeze(axis=2)
+            
+            # Quantize if requested and input dimension is large enough
+            if quantize_bits is not None and arr_2d.shape[1] >= group_size:
+                quantized, scales, biases = quantize_tensor_mlx(arr_2d, quantize_bits, group_size)
+                result[new_key] = quantized
+                result[f"{new_key}.scales"] = scales.astype(np.float16)
+                result[f"{new_key}.biases"] = biases.astype(np.float16)
+                pointwise_quantized_count += 1
+                continue  # Skip the normal processing below
+            else:
+                # Store as 2D but not quantized (transpose to MLX format first)
+                # For non-quantized, keep as 3D Conv1d format: OIK -> OKI
+                arr = transpose_conv1d(arr)
+                conv1d_count += 1
+        
+        # Transpose non-pointwise Conv1d weights: OIK -> OKI
         elif is_conv1d_weight(key, shape):
             arr = transpose_conv1d(arr)
             conv1d_count += 1
@@ -385,17 +454,26 @@ def convert_weights_to_mlx(
         if quantize_bits is not None and should_quantize_tensor(new_key, arr.shape):
             quantized, scales, biases = quantize_tensor_mlx(arr, quantize_bits, group_size)
             result[new_key] = quantized
-            result[f"{new_key}.scales"] = scales
-            result[f"{new_key}.biases"] = biases
+            result[f"{new_key}.scales"] = scales.astype(np.float16)
+            result[f"{new_key}.biases"] = biases.astype(np.float16)
             quantized_count += 1
         else:
+            # For non-quantized small tensors in quantized models, use float16
+            if quantize_bits is not None and arr.dtype == np.float32:
+                # Keep biases, running stats, and small tensors as float16
+                if (arr.ndim == 1 or 
+                    np.prod(arr.shape) < 10000 or
+                    "running_" in new_key or
+                    "pos_bias" in new_key):
+                    arr = arr.astype(np.float16)
             result[new_key] = arr
     
     print(f"Transposed {conv2d_count} Conv2d weights (OIHW -> OHWI)")
     print(f"Transposed {conv1d_count} Conv1d weights (OIK -> OKI)")
     print(f"Skipped {skipped_count} keys (optimizer states, preprocessor, etc.)")
     if quantize_bits is not None:
-        print(f"Quantized {quantized_count} tensors to {quantize_bits}-bit (MLX native format)")
+        print(f"Quantized {quantized_count} linear tensors to {quantize_bits}-bit")
+        print(f"Quantized {pointwise_quantized_count} pointwise conv tensors to {quantize_bits}-bit")
     
     return result
 
@@ -425,8 +503,8 @@ def save_safetensors(weights: Dict[str, np.ndarray], output_path: str) -> None:
     print(f"Saved to {output_path} ({file_size / 1024 / 1024:.2f} MB)")
 
 
-def convert_ckpt(checkpoint_path: str, output_path: str, quantize_bits: Optional[int] = None, group_size: int = QUANTIZE_GROUP_SIZE) -> None:
-    """Convert ckpt file to MLX compatible safetensors."""
+def main(checkpoint_path: str, output_path: str, quantize_bits: Optional[int] = None, group_size: int = QUANTIZE_GROUP_SIZE) -> None:
+    """Main conversion function."""
     quant_str = f" with {quantize_bits}-bit quantization (group_size={group_size})" if quantize_bits else ""
     print(f"Converting {checkpoint_path} to MLX format{quant_str}...")
     
@@ -448,15 +526,29 @@ def convert_ckpt(checkpoint_path: str, output_path: str, quantize_bits: Optional
     if quantize_bits:
         quant_keys = [k for k in mlx_weights.keys() if k.endswith('.scales')]
         print(f"\nQuantized {len(quant_keys)} weight tensors")
-        if quant_keys:
-            sample_key = quant_keys[0].replace('.scales', '')
-            sample_weight = mlx_weights[sample_key]
-            sample_scales = mlx_weights[f"{sample_key}.scales"]
-            sample_biases = mlx_weights[f"{sample_key}.biases"]
-            print(f"Sample quantized tensor '{sample_key}':")
-            print(f"  weight: shape={sample_weight.shape}, dtype={sample_weight.dtype}")
-            print(f"  scales: shape={sample_scales.shape}, dtype={sample_scales.dtype}")
-            print(f"  biases: shape={sample_biases.shape}, dtype={sample_biases.dtype}")
+        
+        # Show breakdown by type
+        linear_quant = [k for k in quant_keys if 'linear' in k.lower() or 'joint' in k.lower()]
+        conv_quant = [k for k in quant_keys if 'pointwise' in k.lower()]
+        lstm_quant = [k for k in quant_keys if 'lstm' in k.lower()]
+        embed_quant = [k for k in quant_keys if 'embed' in k.lower()]
+        other_quant = [k for k in quant_keys if k not in linear_quant + conv_quant + lstm_quant + embed_quant]
+        
+        print(f"  Linear layers: {len(linear_quant)}")
+        print(f"  Pointwise convs: {len(conv_quant)}")
+        print(f"  LSTM weights: {len(lstm_quant)}")
+        print(f"  Embeddings: {len(embed_quant)}")
+        print(f"  Other: {len(other_quant)}")
+        
+        # Show dtype breakdown
+        dtype_sizes = {}
+        for key, arr in mlx_weights.items():
+            dtype = str(arr.dtype)
+            dtype_sizes[dtype] = dtype_sizes.get(dtype, 0) + arr.nbytes
+        
+        print(f"\nSize by dtype:")
+        for dtype, size in sorted(dtype_sizes.items(), key=lambda x: -x[1]):
+            print(f"  {dtype}: {size / 1024 / 1024:.2f} MB")
     
     save_safetensors(mlx_weights, output_path)
     print("Conversion complete!")
@@ -493,7 +585,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     try:
-        convert_ckpt(args.checkpoint_path, args.output_path, args.quantize, args.group_size)
+        main(args.checkpoint_path, args.output_path, args.quantize, args.group_size)
     except (FileNotFoundError, RuntimeError, ImportError, IOError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
