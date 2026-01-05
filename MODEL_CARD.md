@@ -52,6 +52,8 @@ This model was converted to MLX format from [nvidia/parakeet-tdt-0.6b-v3](https:
 
 ## Use with mlx
 
+NOTE: parakeet-mlx and mlx-audio do not support quantized models.
+
 ### parakeet-mlx
 
 ```bash

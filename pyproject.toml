@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "huggingface-hub>=0.36.0",
+    "mlx>=0.30.1",
+    "mlx-audio>=0.2.9",
     "numpy<2.4",
     "parakeet-mlx>=0.4.1",
     "torch>=2.9.1",
