@@ -290,9 +290,9 @@ def convert_lstm_weights(state_dict: Dict[str, Any], quantize_bits: Optional[int
         0.Wx, 0.Wh, 0.bias
         1.Wx, 1.Wh, 1.bias
     
-    MLX format (quantized) - uses .weight suffix for compatibility with load_maybe_quantized_linear:
-        0.Wx.weight, 0.Wx.weight.scales, 0.Wx.weight.biases
-        0.Wh.weight, 0.Wh.weight.scales, 0.Wh.weight.biases
+    MLX format (quantized) - scales/biases are siblings of the weight tensor:
+        0.Wx, 0.Wx.scales, 0.Wx.biases
+        0.Wh, 0.Wh.scales, 0.Wh.biases
         0.bias
     """
     try:
@@ -330,18 +330,19 @@ def convert_lstm_weights(state_dict: Dict[str, Any], quantize_bits: Optional[int
         
         # Quantize LSTM weights if requested
         if quantize_bits is not None and weight_ih.shape[1] >= group_size:
-            # Quantize Wx (input weights) - use .weight suffix for loader compatibility
+            # Quantize Wx (input weights)
+            # MLX expects: Wx (quantized data), Wx.scales, Wx.biases (siblings, not children)
             q_wx, s_wx, b_wx = quantize_tensor_mlx(weight_ih, quantize_bits, group_size)
-            result[f"{prefix}.{layer_idx}.Wx.weight"] = q_wx
-            result[f"{prefix}.{layer_idx}.Wx.weight.scales"] = s_wx.astype(np.float16)
-            result[f"{prefix}.{layer_idx}.Wx.weight.biases"] = b_wx.astype(np.float16)
+            result[f"{prefix}.{layer_idx}.Wx"] = q_wx
+            result[f"{prefix}.{layer_idx}.Wx.scales"] = s_wx.astype(np.float16)
+            result[f"{prefix}.{layer_idx}.Wx.biases"] = b_wx.astype(np.float16)
             quantized_count += 1
             
-            # Quantize Wh (hidden weights) - use .weight suffix for loader compatibility
+            # Quantize Wh (hidden weights)
             q_wh, s_wh, b_wh = quantize_tensor_mlx(weight_hh, quantize_bits, group_size)
-            result[f"{prefix}.{layer_idx}.Wh.weight"] = q_wh
-            result[f"{prefix}.{layer_idx}.Wh.weight.scales"] = s_wh.astype(np.float16)
-            result[f"{prefix}.{layer_idx}.Wh.weight.biases"] = b_wh.astype(np.float16)
+            result[f"{prefix}.{layer_idx}.Wh"] = q_wh
+            result[f"{prefix}.{layer_idx}.Wh.scales"] = s_wh.astype(np.float16)
+            result[f"{prefix}.{layer_idx}.Wh.biases"] = b_wh.astype(np.float16)
             quantized_count += 1
         else:
             # Store as float32 (non-quantized uses simple key names)
@@ -435,8 +436,10 @@ def convert_weights_to_mlx(
             if quantize_bits is not None and arr_2d.shape[1] >= group_size:
                 quantized, scales, biases = quantize_tensor_mlx(arr_2d, quantize_bits, group_size)
                 result[new_key] = quantized
-                result[f"{new_key}.scales"] = scales.astype(np.float16)
-                result[f"{new_key}.biases"] = biases.astype(np.float16)
+                # MLX expects scales/biases as siblings of weight, not children
+                base_key = new_key.rsplit('.', 1)[0] if new_key.endswith('.weight') else new_key
+                result[f"{base_key}.scales"] = scales.astype(np.float16)
+                result[f"{base_key}.biases"] = biases.astype(np.float16)
                 pointwise_quantized_count += 1
                 continue  # Skip the normal processing below
             else:
@@ -454,8 +457,11 @@ def convert_weights_to_mlx(
         if quantize_bits is not None and should_quantize_tensor(new_key, arr.shape):
             quantized, scales, biases = quantize_tensor_mlx(arr, quantize_bits, group_size)
             result[new_key] = quantized
-            result[f"{new_key}.scales"] = scales.astype(np.float16)
-            result[f"{new_key}.biases"] = biases.astype(np.float16)
+            # MLX expects scales/biases as siblings of weight, not children
+            # e.g., linear.weight, linear.scales, linear.biases (not linear.weight.scales)
+            base_key = new_key.rsplit('.', 1)[0] if new_key.endswith('.weight') else new_key
+            result[f"{base_key}.scales"] = scales.astype(np.float16)
+            result[f"{base_key}.biases"] = biases.astype(np.float16)
             quantized_count += 1
         else:
             # For non-quantized small tensors in quantized models, use float16
