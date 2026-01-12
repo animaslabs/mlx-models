@@ -113,17 +113,12 @@ def copy_tokenizer_files(src_dir: str, dst_dir: str) -> None:
         print(f"Copied tokenizer files: {', '.join(copied)}")
 
 
-MLX_USAGE_SECTION = """## Use with mlx
-
-NOTE: parakeet-mlx and mlx-audio do not support quantized models.
+MLX_USAGE_SECTION = """## Usage
 
 ### parakeet-mlx
 
 ```bash
 pip install -U parakeet-mlx
-```
-
-```bash
 parakeet-mlx audio.wav --model {output_repo}
 ```
 
@@ -131,10 +126,40 @@ parakeet-mlx audio.wav --model {output_repo}
 
 ```bash
 pip install -U mlx-audio
+python -m mlx_audio.stt.generate --model {output_repo} --audio audio.wav
 ```
+"""
 
-```bash
-python -m mlx_audio.stt.generate --model {output_repo} --audio audio.wav --output somewhere
+MLX_QUANTIZED_USAGE_SECTION = """## Usage
+
+Quantized models require calling `mlx.nn.quantize()` before loading weights.
+
+```python
+import json
+import mlx.nn as nn
+from huggingface_hub import hf_hub_download
+from parakeet_mlx.utils import from_config
+
+# Download and load config
+config_path = hf_hub_download("{output_repo}", "config.json")
+with open(config_path) as f:
+    config = json.load(f)
+
+# Build model and apply quantization structure
+model = from_config(config)
+nn.quantize(
+    model,
+    bits=config["quantization"]["bits"],
+    group_size=config["quantization"]["group_size"],
+)
+
+# Load quantized weights
+weights_path = hf_hub_download("{output_repo}", "model.safetensors")
+model.load_weights(weights_path)
+
+# Transcribe
+result = model.transcribe("audio.wav")
+print(result.text)
 ```
 """
 
@@ -193,7 +218,11 @@ def generate_model_card(
             tags.insert(0, "quantized")
         library_name = "mlx"
         format_description = "MLX format"
-        usage_section = MLX_USAGE_SECTION.format(output_repo=output_repo)
+        if quantize_bits is not None:
+            format_description = f"MLX format, {quantize_bits}-bit quantized"
+            usage_section = MLX_QUANTIZED_USAGE_SECTION.format(output_repo=output_repo)
+        else:
+            usage_section = MLX_USAGE_SECTION.format(output_repo=output_repo)
     else:
         # PyTorch format
         if "safetensors" not in tags:
@@ -227,10 +256,7 @@ def generate_model_card(
 
     dst_path = Path(output_dir) / "README.md"
     dst_path.write_text(content)
-    format_info = f"{format_description}"
-    if quantize_bits:
-        format_info += f", {quantize_bits}-bit quantized"
-    print(f"Generated README.md ({format_info})")
+    print(f"Generated README.md ({format_description})")
 
 
 def create_config_json(
