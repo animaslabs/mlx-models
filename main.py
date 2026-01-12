@@ -233,14 +233,49 @@ def generate_model_card(
     print(f"Generated README.md ({format_info})")
 
 
-def create_config_json(output_dir: str, quantize_bits: Optional[int] = None) -> None:
-    """Create a config.json file for the MLX model."""
-    import json
+def create_config_json(
+    output_dir: str,
+    unpacked_dir: str,
+    quantize_bits: Optional[int] = None,
+) -> None:
+    """Create a config.json file for the MLX model from the NeMo config.
 
-    config: dict[str, object] = {
-        "model_type": "parakeet-tdt",
-        "framework": "mlx",
-    }
+    Reads the model_config.yaml from the unpacked NeMo directory and converts
+    it to config.json format expected by inference libraries like parakeet-mlx.
+    """
+    import json
+    import yaml
+    from typing import Any
+
+    config: dict[str, Any] = {}
+
+    # Try to load config from model_config.yaml (NeMo format)
+    yaml_path = Path(unpacked_dir) / "model_config.yaml"
+    if yaml_path.exists():
+        with open(yaml_path) as f:
+            nemo_config: dict[str, Any] = yaml.safe_load(f)
+
+        # Copy relevant config sections (same structure as mlx-community models)
+        config = nemo_config.copy()
+
+        # Clean up tokenizer paths to use local files instead of nemo: prefix
+        if "tokenizer" in config:
+            tokenizer: dict[str, Any] = config["tokenizer"]
+            if isinstance(tokenizer.get("model_path"), str):
+                tokenizer["model_path"] = "nemo:tokenizer.model"
+            if isinstance(tokenizer.get("vocab_path"), str):
+                tokenizer["vocab_path"] = "nemo:vocab.txt"
+            if isinstance(tokenizer.get("spe_tokenizer_vocab"), str):
+                tokenizer["spe_tokenizer_vocab"] = "nemo:tokenizer.vocab"
+
+        print(f"Created config.json from NeMo config")
+    else:
+        # Fallback to minimal config if no YAML found
+        config = {
+            "model_type": "parakeet-tdt",
+            "framework": "mlx",
+        }
+        print(f"Created minimal config.json (no NeMo config found)")
 
     if quantize_bits:
         config["quantization"] = {
@@ -251,8 +286,6 @@ def create_config_json(output_dir: str, quantize_bits: Optional[int] = None) -> 
     config_path = Path(output_dir) / "config.json"
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-
-    print(f"Created config.json")
 
 
 def get_output_suffix(
@@ -424,7 +457,7 @@ def convert_model(
             )
 
             # Create config (MLX-specific)
-            create_config_json(output_dir, bits)
+            create_config_json(output_dir, unpacked_dir, bits)
 
             output_dirs.append(output_dir)
 
