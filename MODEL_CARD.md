@@ -10,6 +10,7 @@ datasets:
 tags:
 {tags}
 base_model: {base_model}
+base_model_relation: {base_model_relation}
 ---
 
 # **{output_repo}**

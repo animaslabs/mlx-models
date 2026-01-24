@@ -115,6 +115,8 @@ def copy_tokenizer_files(src_dir: str, dst_dir: str) -> None:
 
 MLX_USAGE_SECTION = """## Usage
 
+**NOTE:** Some newer or quantized models may not be supported in parakeet-mlx or mlx-audio
+
 ### parakeet-mlx
 
 ```bash
@@ -211,6 +213,7 @@ def generate_model_card(
 
     # Build tags list based on format
     tags = list(metadata.get("tags", []))
+    base_model_relation = "quantized" if quantize_bits is not None else "finetune"
     if format == "mlx":
         if "mlx" not in tags:
             tags.append("mlx")
@@ -249,6 +252,7 @@ def generate_model_card(
         datasets=datasets_yaml,
         tags=tags_yaml,
         base_model=source_repo,
+        base_model_relation=base_model_relation,
         output_repo=output_repo,
         format_description=format_description,
         usage_section=usage_section,
@@ -257,6 +261,21 @@ def generate_model_card(
     dst_path = Path(output_dir) / "README.md"
     dst_path.write_text(content)
     print(f"Generated README.md ({format_description})")
+
+
+def _sanitize_for_json(obj):
+    """Recursively replace inf/-inf/nan with None for JSON compatibility."""
+    import math
+
+    if isinstance(obj, float):
+        if math.isinf(obj) or math.isnan(obj):
+            return None
+        return obj
+    elif isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+    return obj
 
 
 def create_config_json(
@@ -311,7 +330,7 @@ def create_config_json(
 
     config_path = Path(output_dir) / "config.json"
     with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
+        json.dump(_sanitize_for_json(config), f, indent=2)
 
 
 def get_output_suffix(
