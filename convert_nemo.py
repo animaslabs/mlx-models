@@ -174,8 +174,8 @@ def is_conv1d_weight(key: str, shape: Tuple[int, ...]) -> bool:
     # Conv1d weights have 3 dimensions
     if len(shape) != 3:
         return False
-    # Conformer conv module weights
-    if any(x in key for x in ["pointwise_conv", "depthwise_conv"]):
+    # Conformer conv module weights and decoder Conv1d layers
+    if any(x in key for x in ["pointwise_conv", "depthwise_conv", "decoder_layers"]):
         return ".weight" in key
     return False
 
