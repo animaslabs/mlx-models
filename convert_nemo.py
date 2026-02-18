@@ -10,8 +10,10 @@ format matching the mlx-community format:
 - Optional quantization to 4-bit or 8-bit using MLX's native quantization format
 
 Quantization notes:
-- Only nn.Linear layers are quantized (MLX only supports QuantizedLinear and QuantizedEmbedding)
-- LSTM and Conv1d weights are NOT quantized (kept as float32)
+- nn.Linear layers and pointwise Conv1d (kernel=1) layers are quantized
+- Pointwise Conv1d weights are squeezed from 3D [O,I,1] to 2D [O,I] and quantized as linear layers
+- LSTM weights are stored as float16 (not quantized)
+- Depthwise/regular Conv1d weights are NOT quantized (kept as float32)
 - Scales/biases use float16 to save space
 
 Usage:
@@ -341,9 +343,14 @@ def convert_lstm_weights(
         if isinstance(weight_hh, torch.Tensor):
             weight_hh = weight_hh.detach().cpu().numpy()
 
-        # Store as float32 (MLX doesn't support quantized LSTM)
-        result[f"{prefix}.{layer_idx}.Wx"] = weight_ih
-        result[f"{prefix}.{layer_idx}.Wh"] = weight_hh
+        # Store as float16 when quantizing (MLX matmul handles mixed precision natively)
+        # Otherwise keep as float32 for full-precision models
+        if quantize_bits is not None:
+            result[f"{prefix}.{layer_idx}.Wx"] = weight_ih.astype(np.float16)
+            result[f"{prefix}.{layer_idx}.Wh"] = weight_hh.astype(np.float16)
+        else:
+            result[f"{prefix}.{layer_idx}.Wx"] = weight_ih
+            result[f"{prefix}.{layer_idx}.Wh"] = weight_hh
 
         # Combine biases (PyTorch has separate ih and hh biases)
         if bias_ih is not None and bias_hh is not None:
@@ -420,9 +427,15 @@ def convert_weights_to_mlx(
             arr = transpose_conv2d(arr)
             conv2d_count += 1
 
-        # Handle Conv1d weights (including pointwise)
-        # Note: Conv1d weights are NOT quantized because MLX doesn't have QuantizedConv1d
-        elif is_pointwise_conv1d(key, shape) or is_conv1d_weight(key, shape):
+        # Handle pointwise Conv1d (kernel=1): squeeze to 2D for quantization
+        elif is_pointwise_conv1d(key, shape) and quantize_bits is not None:
+            # Squeeze kernel dim: PyTorch [O, I, 1] -> [O, I] (2D, like a Linear weight)
+            # This lets it flow into the quantization path below
+            arr = arr.squeeze(axis=2)
+            conv1d_count += 1
+
+        # Handle regular Conv1d weights (including pointwise when not quantizing)
+        elif is_conv1d_weight(key, shape):
             # Transpose to MLX format: OIK -> OKI
             arr = transpose_conv1d(arr)
             conv1d_count += 1
@@ -459,7 +472,7 @@ def convert_weights_to_mlx(
     print(f"Skipped {skipped_count} keys (optimizer states, preprocessor, etc.)")
     if quantize_bits is not None:
         print(
-            f"Quantized {quantized_count} Linear layer weights to {quantize_bits}-bit"
+            f"Quantized {quantized_count} weights to {quantize_bits}-bit (Linear + pointwise Conv1d)"
         )
 
     return result
