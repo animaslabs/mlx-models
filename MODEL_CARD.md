@@ -1,5 +1,5 @@
 ---
-license: {license}
+{license_block}
 track_downloads: true
 language:
 {languages}
@@ -13,8 +13,4 @@ base_model: {base_model}
 base_model_relation: {base_model_relation}
 ---
 
-# **{output_repo}**
-
-This model was converted to {format_description} from [{base_model}](https://huggingface.co/{base_model}) using the scripts in this [github repo](https://github.com/animaslabs/mlx-models). Please refer to [original model card](https://huggingface.co/{base_model}) for more details on the model.
-
-{usage_section}
+{body}

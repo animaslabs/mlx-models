@@ -34,7 +34,15 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from hf import download_model, fetch_model_metadata, unpack_nemo, upload_model
+from hf import (
+    download_model,
+    fetch_model_metadata,
+    fetch_source_info,
+    list_existing_repos,
+    unpack_nemo,
+    upload_model,
+)
+from model_card import write_model_card
 from convert_nemo import (
     load_checkpoint,
     convert_weights_to_mlx,
@@ -111,157 +119,6 @@ def copy_tokenizer_files(src_dir: str, dst_dir: str) -> None:
 
     if copied:
         print(f"Copied tokenizer files: {', '.join(copied)}")
-
-
-MLX_USAGE_SECTION = """## Usage
-
-**NOTE:** Some newer or quantized models may not be supported in parakeet-mlx or mlx-audio
-
-### parakeet-mlx
-
-```bash
-pip install -U parakeet-mlx
-parakeet-mlx audio.wav --model {output_repo}
-```
-
-### mlx-audio
-
-```bash
-pip install -U mlx-audio
-python -m mlx_audio.stt.generate --model {output_repo} --audio audio.wav
-```
-"""
-
-MLX_QUANTIZED_USAGE_SECTION = """## Usage
-
-Quantized models require calling `mlx.nn.quantize()` before loading weights.
-
-```python
-import json
-import mlx.nn as nn
-from huggingface_hub import hf_hub_download
-from parakeet_mlx.utils import from_config
-
-# Download and load config
-config_path = hf_hub_download("{output_repo}", "config.json")
-with open(config_path) as f:
-    config = json.load(f)
-
-# Build model and apply quantization structure
-model = from_config(config)
-nn.quantize(
-    model,
-    bits=config["quantization"]["bits"],
-    group_size=config["quantization"]["group_size"],
-)
-
-# Load quantized weights
-weights_path = hf_hub_download("{output_repo}", "model.safetensors")
-model.load_weights(weights_path)
-
-# Transcribe
-result = model.transcribe("audio.wav")
-print(result.text)
-```
-"""
-
-PYTORCH_USAGE_SECTION = """## Usage
-
-This model is provided in PyTorch safetensors format. It can be loaded using the `safetensors` library:
-
-```python
-from safetensors.torch import load_file
-
-weights = load_file("model.safetensors")
-```
-
-For inference, please refer to the [original model card](https://huggingface.co/{base_model}) for usage instructions and compatible libraries.
-"""
-
-
-def generate_model_card(
-    output_dir: str,
-    source_repo: str,
-    output_repo: str,
-    quantize_bits: Optional[int] = None,
-    model_card_path: str = "MODEL_CARD.md",
-    metadata: Optional[dict] = None,
-    format: str = "mlx",
-) -> None:
-    """
-    Generate a dynamic model card README.md based on source model metadata.
-
-    Args:
-        output_dir: Directory to write README.md to
-        source_repo: Source HuggingFace repository ID
-        output_repo: Target output repository ID
-        quantize_bits: Quantization bit width (None for full precision)
-        model_card_path: Path to the template MODEL_CARD.md
-        metadata: Pre-fetched metadata dict (if None, will fetch from HF)
-        format: Output format ('mlx' or 'pytorch')
-    """
-    src_path = Path(model_card_path)
-    if not src_path.exists():
-        print(f"Warning: {model_card_path} not found, skipping README.md")
-        return
-
-    template = src_path.read_text()
-
-    # Fetch metadata from source model if not provided
-    if metadata is None:
-        metadata = fetch_model_metadata(source_repo)
-
-    # Build tags list based on format
-    # Drop upstream library tags that don't apply to the converted weights
-    tags = [t for t in metadata.get("tags", []) if t not in ("transformers", "gguf")]
-    base_model_relation = "quantized" if quantize_bits is not None else "finetune"
-    if format == "mlx":
-        if "mlx" not in tags:
-            tags.append("mlx")
-        if quantize_bits is not None and "quantized" not in tags:
-            tags.insert(0, "quantized")
-        library_name = "mlx"
-        format_description = "MLX format"
-        if quantize_bits is not None:
-            format_description = f"MLX format, {quantize_bits}-bit quantized"
-            usage_section = MLX_QUANTIZED_USAGE_SECTION.format(output_repo=output_repo)
-        else:
-            usage_section = MLX_USAGE_SECTION.format(output_repo=output_repo)
-    else:
-        # PyTorch format
-        if "safetensors" not in tags:
-            tags.append("safetensors")
-        library_name = "safetensors"
-        format_description = "PyTorch safetensors format"
-        usage_section = PYTORCH_USAGE_SECTION.format(base_model=source_repo)
-
-    # Format YAML lists
-    languages = metadata.get("language", ["en"])
-    languages_yaml = "\n".join(f"- {lang}" for lang in languages)
-
-    datasets = metadata.get("datasets", [])
-    datasets_yaml = "\n".join(f"- {ds}" for ds in datasets) if datasets else "[]"
-
-    tags_yaml = "\n".join(f"- {tag}" for tag in tags)
-
-    # Fill in the template
-    content = template.format(
-        license=metadata.get("license", "apache-2.0"),
-        languages=languages_yaml,
-        pipeline_tag=metadata.get("pipeline_tag", "automatic-speech-recognition"),
-        library_name=library_name,
-        datasets=datasets_yaml,
-        tags=tags_yaml,
-        base_model=source_repo,
-        base_model_relation=base_model_relation,
-        output_repo=output_repo,
-        format_description=format_description,
-        usage_section=usage_section,
-    )
-
-    dst_path = Path(output_dir) / "README.md"
-    dst_path.write_text(content)
-    print(f"Generated README.md ({format_description})")
 
 
 def _sanitize_for_json(obj):
@@ -414,6 +271,7 @@ def convert_model(
     # Fetch source model metadata once (reuse for all conversions)
     print(f"\nFetching model metadata from {repo_id}...")
     metadata = fetch_model_metadata(repo_id)
+    source_revision, nemo_sha256 = fetch_source_info(repo_id, nemo_file.name)
 
     # Step 4: Convert based on format
     output_dirs = []
@@ -447,8 +305,14 @@ def convert_model(
         target_repo = (
             f"{output_repo}{suffix}" if output_repo else f"{repo_name}{suffix}"
         )
-        generate_model_card(
-            output_dir, repo_id, target_repo, metadata=metadata, format="pytorch"
+        write_model_card(
+            output_dir,
+            repo_id,
+            target_repo,
+            metadata,
+            fmt="pytorch",
+            source_revision=source_revision,
+            nemo_sha256=nemo_sha256,
         )
 
         # No config.json for pytorch format (MLX-specific)
@@ -469,6 +333,12 @@ def convert_model(
         # Default quantization: just full precision
         if quantize_bits is None:
             quantize_bits = [None]
+
+        repo_base = output_repo or repo_id.split("/")[-1]
+        building = [f"{repo_base}{get_output_suffix(format, quantize_bits=b)}" for b in quantize_bits]
+        candidates = [f"{repo_base}{get_output_suffix(format, quantize_bits=b)}" for b in (None, 8, 4)]
+        existing = list_existing_repos([c for c in candidates if c not in building]) if output_repo else []
+        variants = [c for c in candidates if c in building or c in existing]
 
         for bits in quantize_bits:
             suffix = get_output_suffix(format, quantize_bits=bits)
@@ -498,8 +368,16 @@ def convert_model(
             target_repo = (
                 f"{output_repo}{suffix}" if output_repo else f"{repo_name}{suffix}"
             )
-            generate_model_card(
-                output_dir, repo_id, target_repo, bits, metadata=metadata, format="mlx"
+            write_model_card(
+                output_dir,
+                repo_id,
+                target_repo,
+                metadata,
+                bits=bits,
+                group_size=group_size,
+                variants=variants,
+                source_revision=source_revision,
+                nemo_sha256=nemo_sha256,
             )
 
             # Create config (MLX-specific)

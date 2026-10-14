@@ -133,3 +133,21 @@ uv run examples/transcribe.py \
   --model models/parakeet-tdt-0.6b-v3-mlx \
   --audio samples/test.wav
 ```
+
+## Published models
+
+Current state of the [animaslabs](https://huggingface.co/animaslabs) speech repos, maintained by hand. Last checked 2026-10-14 by transcribing `samples/Speaker26_004_16k.wav` with each repo in each runtime (parakeet-mlx 0.5.3, mlx-audio 0.5.9, mlx-voice-rs `8a5b440`).
+
+| Model | Variants | parakeet-mlx | mlx-audio | mlx-voice-rs |
+|---|---|---|---|---|
+| [parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) | mlx, 8bit, 4bit | ✅ | ✅ | ❌ no TDT decoding |
+| [parakeet-rnnt-0.6b](https://huggingface.co/nvidia/parakeet-rnnt-0.6b) | mlx, 8bit, 4bit | ✅ | ✅ | ✅ |
+| [parakeet-ctc-0.6b](https://huggingface.co/nvidia/parakeet-ctc-0.6b) | mlx, pytorch | ✅ (mlx) | ✅ (mlx) | ✅ |
+| [nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | mlx, 8bit, 4bit | ❌ | ❌ | ✅ |
+| [multitalker-parakeet-streaming-0.6b-v1](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1) | mlx, 8bit, 4bit | ❌ | ❌ | 🚧 in progress |
+
+Notes:
+
+- **Quantization layout.** The quantized parakeet-tdt, parakeet-rnnt and multitalker repos were built before pointwise convs were quantized, so their pointwise convs are unquantized and the LSTM is float32. The current converter quantizes pointwise convs as linear layers and stores the LSTM as float16, which is smaller but only loads in mlx-voice-rs: parakeet-mlx and mlx-audio build pointwise convs as `nn.Conv1d`. The nemotron repos use the current layout.
+- **nemotron in mlx-audio.** mlx-audio can't read these repos' `config.json`, but it loads the original `nvidia/nemotron-speech-streaming-en-0.6b` directly.
+- **Compatibility on model cards** comes from `COMPATIBILITY` in `model_card.py`. Update it (and this table) when you re-check a runtime.

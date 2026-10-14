@@ -53,6 +53,9 @@ def fetch_model_metadata(repo_id: str) -> dict:
     # Extract metadata with fallbacks to defaults
     metadata = {
         "license": data.get("license", defaults["license"]),
+        # Set when license is "other" (e.g. the NVIDIA Open Model License)
+        "license_name": data.get("license_name"),
+        "license_link": data.get("license_link"),
         "language": data.get("language", defaults["language"]),
         "pipeline_tag": data.get("pipeline_tag", defaults["pipeline_tag"]),
         "tags": data.get("tags", defaults["tags"]),
@@ -73,6 +76,23 @@ def fetch_model_metadata(repo_id: str) -> dict:
         metadata["datasets"] = []
 
     return metadata
+
+
+def fetch_source_info(repo_id: str, nemo_filename: str) -> tuple[str, str | None]:
+    """
+    Return (commit sha, .nemo sha256) for the current main revision of repo_id.
+
+    Recorded on model cards so a later upstream checkpoint change is easy to spot.
+    """
+    info = HfApi().model_info(repo_id, files_metadata=True)
+    nemo = next((s for s in info.siblings if s.rfilename == nemo_filename), None)
+    return info.sha, nemo.lfs.sha256 if nemo and nemo.lfs else None
+
+
+def list_existing_repos(repo_ids: list[str]) -> list[str]:
+    """Return the subset of repo_ids that exist on the Hub, preserving order."""
+    api = HfApi()
+    return [r for r in repo_ids if api.repo_exists(r)]
 
 
 def download_model(
