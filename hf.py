@@ -165,7 +165,8 @@ def unpack_nemo(nemo_path: str, output_dir: str | None = None) -> str:
     print(f"Unpacking {nemo_path} to {output_dir}...")
 
     with tarfile.open(nemo_path, "r:*") as tar:
-        tar.extractall(path=output_dir)
+        # "data" rejects absolute paths, ".." traversal, and links escaping output_dir
+        tar.extractall(path=output_dir, filter="data")
 
     print(f"Extracted to {output_dir}")
     return output_dir
