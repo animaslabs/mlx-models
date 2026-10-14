@@ -212,7 +212,8 @@ def generate_model_card(
         metadata = fetch_model_metadata(source_repo)
 
     # Build tags list based on format
-    tags = list(metadata.get("tags", []))
+    # Drop upstream library tags that don't apply to the converted weights
+    tags = [t for t in metadata.get("tags", []) if t not in ("transformers", "gguf")]
     base_model_relation = "quantized" if quantize_bits is not None else "finetune"
     if format == "mlx":
         if "mlx" not in tags:
