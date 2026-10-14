@@ -20,7 +20,7 @@ Generate a token at https://huggingface.co/settings/tokens.
 Alternatively, log in once via the CLI:
 
 ```bash
-uv run huggingface-cli login
+uv run hf auth login
 ```
 
 ## Commands
