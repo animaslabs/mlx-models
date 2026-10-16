@@ -319,7 +319,7 @@ def write_model_card(
     weights = describe_weights(out / "model.safetensors")
 
     # Upstream library tags (e.g. NVIDIA's Transformers and GGUF files) don't apply here
-    tags = [t for t in metadata.get("tags", []) if t not in ("transformers", "gguf")]
+    tags = [t for t in metadata.get("tags", []) if t.lower() not in ("transformers", "gguf")]
     if fmt == "mlx":
         library_name = "mlx"
         tags += [t for t in ["mlx"] if t not in tags]
