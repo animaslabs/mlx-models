@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 *.pyo
 /samples/eval/
+/bench/results/
+/bench/nemo/.venv/

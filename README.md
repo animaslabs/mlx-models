@@ -150,6 +150,27 @@ uv run samples/score.py ../mlx-voice-rs/hypotheses.jsonl
 uv run samples/score.py rust.jsonl python.jsonl --json scores.json
 ```
 
+### `bench/bench.py` — Benchmark against other runtimes
+
+Compares mlx-voice-rs, parakeet-mlx, mlx-audio and NVIDIA NeMo (PyTorch, MPS) on the eval set. It measures speed (model load time, wall time, RTF, and per-chunk latency when streaming) and WER, scored with `samples/score.py`. Two models are covered: parakeet-rnnt-0.6b offline and nemotron-speech-streaming-en-0.6b cache-aware streaming (mode 0 = `[70, 13]`). mlx-voice-rs and NeMo load the original `.nemo` file; the MLX libraries load the unquantized `animaslabs/*-mlx` conversions. Every library is timed from WAV path to text, after one untimed warm-up. A library that can't run a model is reported as n/a instead of failing the run. Offline parakeet-rnnt is limited to clips of 400 s or less by default, because whole-file full attention on the 18–22 min clips needs tens of GB (about 40 GB in mlx-voice-rs for 18 min) and NeMo on MPS bogs the machine down. Pass `--all-clips` to include them. The NeMo process also gets a hard MPS memory budget: 60% of RAM by default, or set `BENCH_NEMO_MEMORY_GB`. A clip that would go over it fails fast and is reported as an out-of-memory error, so it can't push the machine into swap.
+
+The script builds and runs `examples/eval` from a mlx-voice-rs checkout (`../mlx-voice-rs` by default; change it with `--rust-repo`). NeMo has its own Python 3.12 environment in `bench/nemo` because it doesn't support Python 3.14. Set it up once:
+
+```bash
+uv sync --project bench/nemo
+```
+
+Then run:
+
+```bash
+uv run bench/bench.py                                    # both models, the 6 English clips
+uv run bench/bench.py --model nemotron --only mlx-voice-rs --only nemo
+uv run bench/bench.py --all-clips --repeats 3            # include the 18–22 min clips offline
+uv run bench/bench.py --report bench/results/<timestamp> # rebuild the report only
+```
+
+Results go to `bench/results/<timestamp>/` (gitignored): one JSONL file per library × model, plus `report.md` and `report.json`. To run a single library by hand, use `bench/run.py`. Its NeMo runner needs `uv run --project bench/nemo bench/run.py --library nemo ...`.
+
 ## Typical workflow
 
 ```bash

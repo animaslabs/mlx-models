@@ -1,0 +1,14 @@
+[project]
+name = "mlx-models-bench-nemo"
+version = "0.1.0"
+description = "NVIDIA NeMo runner for the cross-library ASR benchmark (bench/run.py --library nemo)"
+# NeMo doesn't support the root project's Python 3.14 yet, and its torch/numpy
+# pins clash with the MLX libraries, so it gets its own environment.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "nemo_toolkit[asr]",
+    "soundfile",
+]
+
+[tool.uv]
+package = false
