@@ -77,7 +77,7 @@ Per layer is 3,145,728 weights × bits per weight. The float32 and 4-bit totals 
 Measured whole-file sizes for parakeet-tdt-0.6b-v3 at 4 bits, both from the current converter:
 
 - Pointwise unquantized (the new default for tdt): 594.3 MiB
-- Pointwise quantized (`--quantize-pointwise`): 346.8 MiB, 42% smaller
+- Pointwise quantized (`--pointwise quantized`, the `-pw` repos): 346.8 MiB, 42% smaller
 
 At 8 bits the same switch would take the file from about 866 MiB to about 655 MiB. That figure is computed from the table above, not measured.
 
@@ -103,9 +103,23 @@ The math is the same, but a runtime must build the layer as a Linear for the qua
 
 The 96 unexpected parameters are the scales and offsets: 24 layers × 2 pointwise convs × 2 tensors.
 
-`main.py` now takes `--quantize-pointwise` / `--no-quantize-pointwise`. Without either, it picks per model family from the `COMPATIBILITY` table in `model_card.py`:
+## Naming: the `-pw` variants
 
-- **tdt, rnnt, ctc:** off, because parakeet-mlx or mlx-audio can run them.
-- **nemotron (cache-aware rnnt), multitalker:** on, because only mlx-voice-rs runs them, so the smaller layout costs nothing.
+Both layouts are published as separate repos, and the name says which one you're getting. The rule is the same for every model family:
 
-If parakeet-mlx or mlx-audio adds support for a family, marking it in `COMPATIBILITY` switches the default off for that family. Storing the unquantized pointwise weights as float16 would save another 144 MiB and should still load as `nn.Conv1d`, but that hasn't been tried.
+- **No suffix** (`-mlx-4bit`, `-mlx-8bit`): pointwise convs unquantized. Loads in every runtime that supports the model.
+- **`-pw` suffix** (`-mlx-4bit-pw`, `-mlx-8bit-pw`): pointwise convs quantized as linear layers. Smaller, but only mlx-voice-rs loads it.
+
+`main.py --pointwise` picks which to build: `unquantized` (the default), `quantized` or `both`. Full-precision repos have no pointwise variant.
+
+Rebuilt nemotron-speech-streaming-en-0.6b on 2026-10-16 with `--pointwise both`, transcribing the sample:
+
+| Variant | Size (MiB) | mlx-audio 0.5.9 | mlx-voice-rs 271f965 |
+| --- | --- | --- | --- |
+| `-mlx` | 2358 | Loads and transcribes | Loads and transcribes |
+| `-mlx-8bit` | 845 | Loads and transcribes | Loads and transcribes |
+| `-mlx-8bit-pw` | 633 | Fails: "Received 96 parameters not in model" | Loads and transcribes |
+| `-mlx-4bit` | 589 | Loads and transcribes | Loads and transcribes |
+| `-mlx-4bit-pw` | 342 | Fails: "Received 96 parameters not in model" | Loads and transcribes |
+
+Storing the unquantized pointwise weights as float16 would save another 144 MiB and should still load as `nn.Conv1d`, but that hasn't been tried.

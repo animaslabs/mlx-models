@@ -374,7 +374,7 @@ def convert_weights_to_mlx(
     state_dict: Dict[str, Any],
     quantize_bits: Optional[int] = None,
     group_size: int = QUANTIZE_GROUP_SIZE,
-    quantize_pointwise: bool = True,
+    quantize_pointwise: bool = False,
 ) -> Dict[str, np.ndarray]:
     """
     Convert all weights to MLX format with proper transpositions.
@@ -515,7 +515,7 @@ def main(
     output_path: str,
     quantize_bits: Optional[int] = None,
     group_size: int = QUANTIZE_GROUP_SIZE,
-    quantize_pointwise: bool = True,
+    quantize_pointwise: bool = False,
 ) -> None:
     """Main conversion function."""
     quant_str = (
@@ -607,8 +607,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--quantize-pointwise",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Quantize pointwise Conv1d weights as linear layers (default: on). "
+        default=False,
+        help="Quantize pointwise Conv1d weights as linear layers (default: off). "
         "parakeet-mlx and mlx-audio can't load this layout",
     )
 

@@ -34,8 +34,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-import yaml
-
 from hf import (
     download_model,
     fetch_model_metadata,
@@ -44,7 +42,7 @@ from hf import (
     unpack_nemo,
     upload_model,
 )
-from model_card import PARAKEET_MLX_FAMILIES, detect_family, write_model_card
+from model_card import detect_family, write_model_card
 from convert_nemo import (
     load_checkpoint,
     convert_weights_to_mlx,
@@ -138,15 +136,78 @@ def _sanitize_for_json(obj):
     return obj
 
 
+def nemotron_asr_config(nemo_config: dict) -> dict:
+    """Build a config.json in mlx-audio's native nemotron_asr layout.
+
+    Mirrors mlx_audio.stt.models.nemotron_asr.convert._build_config, with the
+    overrides mlx-audio's transformers-config path uses for this model: no
+    language prompt, constant STFT padding, and the model's own attention context.
+    """
+    pre = nemo_config["preprocessor"]
+    enc = nemo_config["encoder"]
+    dec = nemo_config["decoder"]
+    joint = nemo_config["joint"]
+    att_context_size = [list(c) for c in enc["att_context_size"]]
+    encoder_keys = [
+        "feat_in", "n_layers", "d_model", "n_heads", "ff_expansion_factor",
+        "subsampling_factor", "subsampling_conv_channels", "conv_kernel_size",
+        "causal_downsampling", "conv_context_size", "conv_norm_type",
+        "self_attention_model", "att_context_style", "pos_emb_max_len",
+        "use_bias", "xscaling",
+    ]
+    return {
+        "model_type": "nemotron_asr",
+        "target": nemo_config.get("target", ""),
+        "preprocessor": {
+            "sample_rate": pre.get("sample_rate", 16000),
+            "features": pre.get("features", 128),
+            "n_fft": pre.get("n_fft", 512),
+            "window_size": pre.get("window_size", 0.025),
+            "window_stride": pre.get("window_stride", 0.01),
+            "window": pre.get("window", "hann"),
+            "preemph": pre.get("preemph") or 0.97,
+            "dither": pre.get("dither", 1.0e-05),
+            "normalize": str(pre.get("normalize", "NA")),
+            "log_zero_guard_value": 2.0**-24,
+            "pad_to": pre.get("pad_to", 0),
+            "pad_value": pre.get("pad_value", 0.0),
+            "pad_mode": "constant",
+        },
+        "encoder": {k: enc[k] for k in encoder_keys if k in enc}
+        | {"att_context_size": att_context_size},
+        "prompt": {"num_prompts": 0, "prompt_hidden": 0, "prompt_dictionary": {}},
+        "decoder": {
+            "pred_hidden": dec["prednet"]["pred_hidden"],
+            "pred_rnn_layers": dec["prednet"]["pred_rnn_layers"],
+            "vocab_size": dec["vocab_size"],
+            "blank_as_pad": dec.get("blank_as_pad", True),
+        },
+        "joint": {
+            "joint_hidden": joint["jointnet"]["joint_hidden"],
+            "activation": joint["jointnet"].get("activation", "relu"),
+            "encoder_hidden": joint["jointnet"]["encoder_hidden"],
+            "pred_hidden": joint["jointnet"]["pred_hidden"],
+            "num_classes": joint["num_classes"],
+        },
+        "vocabulary": list(joint["vocabulary"]),
+        "default_language": "en",
+        "default_att_context_size": att_context_size[0],
+        "max_symbols": nemo_config.get("decoding", {}).get("greedy", {}).get("max_symbols", 10),
+    }
+
+
 def create_config_json(
     output_dir: str,
     unpacked_dir: str,
     quantize_bits: Optional[int] = None,
+    group_size: int = QUANTIZE_GROUP_SIZE,
 ) -> None:
     """Create a config.json file for the MLX model from the NeMo config.
 
     Reads the model_config.yaml from the unpacked NeMo directory and converts
     it to config.json format expected by inference libraries like parakeet-mlx.
+    Cache-aware streaming models get mlx-audio's nemotron_asr layout instead,
+    since parakeet-mlx can't run them.
     """
     import json
     import yaml
@@ -160,6 +221,10 @@ def create_config_json(
         with open(yaml_path) as f:
             nemo_config: dict[str, Any] = yaml.safe_load(f)
 
+    if yaml_path.exists() and detect_family(nemo_config) == "cache-aware-rnnt":
+        config = nemotron_asr_config(nemo_config)
+        print(f"Created config.json in mlx-audio's nemotron_asr layout")
+    elif yaml_path.exists():
         # Copy relevant config sections (same structure as mlx-community models)
         config = nemo_config.copy()
 
@@ -185,7 +250,7 @@ def create_config_json(
     if quantize_bits:
         config["quantization"] = {
             "bits": quantize_bits,
-            "group_size": QUANTIZE_GROUP_SIZE,
+            "group_size": group_size,
         }
 
     config_path = Path(output_dir) / "config.json"
@@ -197,8 +262,14 @@ def get_output_suffix(
     format: str,
     quantize_bits: Optional[int] = None,
     dtype: Optional[str] = None,
+    quantize_pointwise: bool = False,
 ) -> str:
-    """Get the output directory suffix based on format and quantization."""
+    """Get the output directory suffix based on format and quantization.
+
+    Quantized variants with pointwise convs quantized as linear layers get a
+    -pw suffix: smaller, but only runtimes that build those convs as linear
+    layers can load them.
+    """
     if format == "pytorch":
         if dtype == "float16":
             return "-fp16"
@@ -206,7 +277,7 @@ def get_output_suffix(
     else:  # mlx format
         if quantize_bits is None:
             return "-mlx"
-        return f"-mlx-{quantize_bits}bit"
+        return f"-mlx-{quantize_bits}bit" + ("-pw" if quantize_pointwise else "")
 
 
 def convert_model(
@@ -219,7 +290,7 @@ def convert_model(
     group_size: int = QUANTIZE_GROUP_SIZE,
     format: str = "mlx",
     dtype: Optional[str] = None,
-    quantize_pointwise: Optional[bool] = None,
+    pointwise: str = "unquantized",
 ) -> list[str]:
     """
     Main conversion pipeline.
@@ -234,8 +305,9 @@ def convert_model(
         group_size: Quantization group size (MLX format only)
         format: Output format ('mlx' or 'pytorch')
         dtype: Target dtype for pytorch format ('float16' or None)
-        quantize_pointwise: Quantize pointwise convs as linear layers (MLX format only).
-            None picks per family: off where parakeet-mlx/mlx-audio can run the model
+        pointwise: For quantized MLX variants, 'unquantized' leaves pointwise convs
+            in float, 'quantized' quantizes them as linear layers (-pw repos), 'both'
+            builds each
 
     Returns:
         List of output directory paths
@@ -339,25 +411,26 @@ def convert_model(
         if quantize_bits is None:
             quantize_bits = [None]
 
-        if quantize_pointwise is None:
-            # parakeet-mlx and mlx-audio build pointwise convs as nn.Conv1d, so
-            # quantizing them as linear layers would break those runtimes
-            nemo_config = yaml.safe_load((Path(unpacked_dir) / "model_config.yaml").read_text())
-            family = detect_family(nemo_config)
-            quantize_pointwise = family not in PARAKEET_MLX_FAMILIES
-            if any(quantize_bits):
-                state = "quantized" if quantize_pointwise else "left unquantized"
-                print(f"Pointwise convs will be {state} ({family} family)")
+        # parakeet-mlx and mlx-audio build pointwise convs as nn.Conv1d, so only
+        # the -pw variants quantize them as linear layers
+        pointwise_options = {"unquantized": [False], "quantized": [True], "both": [False, True]}[pointwise]
+        builds = [(b, pw) for b in quantize_bits for pw in (pointwise_options if b else [False])]
 
         repo_base = output_repo or repo_id.split("/")[-1]
-        building = [f"{repo_base}{get_output_suffix(format, quantize_bits=b)}" for b in quantize_bits]
-        candidates = [f"{repo_base}{get_output_suffix(format, quantize_bits=b)}" for b in (None, 8, 4)]
+
+        def repo_for(bits, pw):
+            return f"{repo_base}{get_output_suffix(format, quantize_bits=bits, quantize_pointwise=pw)}"
+
+        building = [repo_for(b, pw) for b, pw in builds]
+        candidates = [repo_for(b, pw) for b, pw in [(None, False), (8, False), (4, False), (8, True), (4, True)]]
         existing = list_existing_repos([c for c in candidates if c not in building]) if output_repo else []
         variants = [c for c in candidates if c in building or c in existing]
 
-        for bits in quantize_bits:
-            suffix = get_output_suffix(format, quantize_bits=bits)
+        for bits, quantize_pointwise in builds:
+            suffix = get_output_suffix(format, quantize_bits=bits, quantize_pointwise=quantize_pointwise)
             quant_str = f"{bits}-bit quantized" if bits else "full precision"
+            if quantize_pointwise:
+                quant_str += ", pointwise convs quantized"
 
             print(f"\n{'=' * 60}")
             print(f"Step 3: Converting to MLX format ({quant_str})")
@@ -398,7 +471,7 @@ def convert_model(
             )
 
             # Create config (MLX-specific)
-            create_config_json(output_dir, unpacked_dir, bits)
+            create_config_json(output_dir, unpacked_dir, bits, group_size)
 
             output_dirs.append(output_dir)
 
@@ -493,11 +566,12 @@ Examples:
         help=f"Quantization group size (default: {QUANTIZE_GROUP_SIZE})",
     )
     parser.add_argument(
-        "--quantize-pointwise",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Quantize pointwise convs as linear layers (smaller, but parakeet-mlx and "
-        "mlx-audio can't load it). Default: off for tdt/rnnt/ctc, on otherwise",
+        "--pointwise",
+        choices=["unquantized", "quantized", "both"],
+        default="unquantized",
+        help="Pointwise convs in quantized variants: 'quantized' stores them as quantized "
+        "linear layers in -pw repos (smaller, but parakeet-mlx and mlx-audio can't load "
+        "them), 'both' builds each. Default: unquantized",
     )
 
     args = parser.parse_args()
@@ -549,7 +623,7 @@ Examples:
             group_size=args.group_size,
             format=args.format,
             dtype=dtype,
-            quantize_pointwise=args.quantize_pointwise,
+            pointwise=args.pointwise,
         )
 
         print(f"\n{'=' * 60}")

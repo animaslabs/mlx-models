@@ -54,22 +54,13 @@ COMPATIBILITY = {
     },
     "cache-aware-rnnt": {
         "parakeet-mlx": (False, "Cache-aware streaming models aren't supported"),
-        "mlx-audio": (
-            False,
-            "Can't read this repo's config.json. mlx-audio loads the original "
-            "[{base_model}](https://huggingface.co/{base_model}) directly (full precision)",
-        ),
+        "mlx-audio": (True, ""),
         "mlx-voice-rs": (True, ""),
     },
 }
 
 # parakeet-mlx and mlx-audio build pointwise convs as nn.Conv1d, which can't load
-# pointwise weights that were quantized as linear layers.
-PARAKEET_MLX_FAMILIES = {
-    family
-    for family, runtimes in COMPATIBILITY.items()
-    if runtimes["parakeet-mlx"][0] or runtimes["mlx-audio"][0]
-}
+# pointwise weights that were quantized as linear layers (the -pw repos).
 QUANTIZED_POINTWISE_NOTE = "Pointwise convs are quantized as linear layers, which this runtime can't load"
 
 # mlx-voice-rs model type per family
@@ -254,6 +245,9 @@ def render_body(
             f"**{v.split('/')[-1]}**" if v == repo else f"[{v.split('/')[-1]}](https://huggingface.co/{v})"
             for v in variants
         )]
+        if any(v.endswith("-pw") for v in variants):
+            lines += ["", "Variants ending in `-pw` also quantize the pointwise convs. "
+                      "They're smaller, but only mlx-voice-rs can load them."]
 
     table = compatibility(family, weights, base_model) if fmt == "mlx" else {
         "mlx-voice-rs": COMPATIBILITY[family]["mlx-voice-rs"],
@@ -285,8 +279,11 @@ def render_body(
 
     file_notes = {
         "model.safetensors": describe_format(weights, bits, group_size, fmt),
-        "config.json": "The NeMo model config as JSON (the layout parakeet-mlx reads)"
-        + (", plus a `quantization` block" if bits else "") + ".",
+        "config.json": (
+            "The model config in mlx-audio's `nemotron_asr` layout"
+            if family == "cache-aware-rnnt"
+            else "The NeMo model config as JSON (the layout parakeet-mlx reads)"
+        ) + (", plus a `quantization` block" if bits else "") + ".",
         "model_config.yaml": "The original NeMo config from the `.nemo` archive. mlx-voice-rs reads this one.",
         "tokenizer.model": "SentencePiece tokenizer.",
         "tokenizer.vocab": "SentencePiece vocabulary.",
