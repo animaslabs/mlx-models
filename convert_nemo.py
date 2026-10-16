@@ -10,8 +10,10 @@ format matching the mlx-community format:
 - Optional quantization to 4-bit or 8-bit using MLX's native quantization format
 
 Quantization notes:
-- nn.Linear layers and pointwise Conv1d (kernel=1) layers are quantized
-- Pointwise Conv1d weights are squeezed from 3D [O,I,1] to 2D [O,I] and quantized as linear layers
+- nn.Linear layers are quantized
+- Pointwise Conv1d (kernel=1) layers are optionally quantized: their weights are squeezed
+  from 3D [O,I,1] to 2D [O,I] and quantized as linear layers. parakeet-mlx and mlx-audio
+  build pointwise convs as nn.Conv1d and can't load this layout (see --no-quantize-pointwise)
 - LSTM weights are stored as float16 (not quantized)
 - Depthwise/regular Conv1d weights are NOT quantized (kept as float32)
 - Scales/biases use float16 to save space
@@ -372,6 +374,7 @@ def convert_weights_to_mlx(
     state_dict: Dict[str, Any],
     quantize_bits: Optional[int] = None,
     group_size: int = QUANTIZE_GROUP_SIZE,
+    quantize_pointwise: bool = True,
 ) -> Dict[str, np.ndarray]:
     """
     Convert all weights to MLX format with proper transpositions.
@@ -380,6 +383,8 @@ def convert_weights_to_mlx(
         state_dict: PyTorch state dict
         quantize_bits: If set, quantize weights to this bit width (4 or 8)
         group_size: Group size for quantization (default: 64)
+        quantize_pointwise: Also quantize pointwise Conv1d weights as linear layers
+            (only loadable by runtimes that build pointwise convs as nn.Linear)
     """
     try:
         import torch
@@ -428,7 +433,11 @@ def convert_weights_to_mlx(
             conv2d_count += 1
 
         # Handle pointwise Conv1d (kernel=1): squeeze to 2D for quantization
-        elif is_pointwise_conv1d(key, shape) and quantize_bits is not None:
+        elif (
+            is_pointwise_conv1d(key, shape)
+            and quantize_bits is not None
+            and quantize_pointwise
+        ):
             # Squeeze kernel dim: PyTorch [O, I, 1] -> [O, I] (2D, like a Linear weight)
             # This lets it flow into the quantization path below
             arr = arr.squeeze(axis=2)
@@ -471,9 +480,8 @@ def convert_weights_to_mlx(
     print(f"Transposed {conv1d_count} Conv1d weights (OIK -> OKI)")
     print(f"Skipped {skipped_count} keys (optimizer states, preprocessor, etc.)")
     if quantize_bits is not None:
-        print(
-            f"Quantized {quantized_count} weights to {quantize_bits}-bit (Linear + pointwise Conv1d)"
-        )
+        layers = "Linear + pointwise Conv1d" if quantize_pointwise else "Linear"
+        print(f"Quantized {quantized_count} weights to {quantize_bits}-bit ({layers})")
 
     return result
 
@@ -507,6 +515,7 @@ def main(
     output_path: str,
     quantize_bits: Optional[int] = None,
     group_size: int = QUANTIZE_GROUP_SIZE,
+    quantize_pointwise: bool = True,
 ) -> None:
     """Main conversion function."""
     quant_str = (
@@ -519,7 +528,9 @@ def main(
     state_dict = load_checkpoint(checkpoint_path)
 
     print("Converting weights to MLX format...")
-    mlx_weights = convert_weights_to_mlx(state_dict, quantize_bits, group_size)
+    mlx_weights = convert_weights_to_mlx(
+        state_dict, quantize_bits, group_size, quantize_pointwise
+    )
     print(f"Total: {len(mlx_weights)} tensors")
 
     # Show key prefixes for verification
@@ -593,11 +604,24 @@ if __name__ == "__main__":
         default=64,
         help="Group size for block-wise quantization (default: 64)",
     )
+    parser.add_argument(
+        "--quantize-pointwise",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Quantize pointwise Conv1d weights as linear layers (default: on). "
+        "parakeet-mlx and mlx-audio can't load this layout",
+    )
 
     args = parser.parse_args()
 
     try:
-        main(args.checkpoint_path, args.output_path, args.quantize, args.group_size)
+        main(
+            args.checkpoint_path,
+            args.output_path,
+            args.quantize,
+            args.group_size,
+            args.quantize_pointwise,
+        )
     except (FileNotFoundError, RuntimeError, ImportError, IOError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

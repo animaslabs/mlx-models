@@ -34,6 +34,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from hf import (
     download_model,
     fetch_model_metadata,
@@ -42,7 +44,7 @@ from hf import (
     unpack_nemo,
     upload_model,
 )
-from model_card import write_model_card
+from model_card import PARAKEET_MLX_FAMILIES, detect_family, write_model_card
 from convert_nemo import (
     load_checkpoint,
     convert_weights_to_mlx,
@@ -217,6 +219,7 @@ def convert_model(
     group_size: int = QUANTIZE_GROUP_SIZE,
     format: str = "mlx",
     dtype: Optional[str] = None,
+    quantize_pointwise: Optional[bool] = None,
 ) -> list[str]:
     """
     Main conversion pipeline.
@@ -231,6 +234,8 @@ def convert_model(
         group_size: Quantization group size (MLX format only)
         format: Output format ('mlx' or 'pytorch')
         dtype: Target dtype for pytorch format ('float16' or None)
+        quantize_pointwise: Quantize pointwise convs as linear layers (MLX format only).
+            None picks per family: off where parakeet-mlx/mlx-audio can run the model
 
     Returns:
         List of output directory paths
@@ -334,6 +339,16 @@ def convert_model(
         if quantize_bits is None:
             quantize_bits = [None]
 
+        if quantize_pointwise is None:
+            # parakeet-mlx and mlx-audio build pointwise convs as nn.Conv1d, so
+            # quantizing them as linear layers would break those runtimes
+            nemo_config = yaml.safe_load((Path(unpacked_dir) / "model_config.yaml").read_text())
+            family = detect_family(nemo_config)
+            quantize_pointwise = family not in PARAKEET_MLX_FAMILIES
+            if any(quantize_bits):
+                state = "quantized" if quantize_pointwise else "left unquantized"
+                print(f"Pointwise convs will be {state} ({family} family)")
+
         repo_base = output_repo or repo_id.split("/")[-1]
         building = [f"{repo_base}{get_output_suffix(format, quantize_bits=b)}" for b in quantize_bits]
         candidates = [f"{repo_base}{get_output_suffix(format, quantize_bits=b)}" for b in (None, 8, 4)]
@@ -355,7 +370,9 @@ def convert_model(
 
             # Convert weights (MLX transformations + optional quantization)
             print(f"Converting weights...")
-            mlx_weights = convert_weights_to_mlx(state_dict, bits, group_size)
+            mlx_weights = convert_weights_to_mlx(
+                state_dict, bits, group_size, quantize_pointwise
+            )
 
             # Save safetensors
             output_file = Path(output_dir) / "model.safetensors"
@@ -475,6 +492,13 @@ Examples:
         default=QUANTIZE_GROUP_SIZE,
         help=f"Quantization group size (default: {QUANTIZE_GROUP_SIZE})",
     )
+    parser.add_argument(
+        "--quantize-pointwise",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Quantize pointwise convs as linear layers (smaller, but parakeet-mlx and "
+        "mlx-audio can't load it). Default: off for tdt/rnnt/ctc, on otherwise",
+    )
 
     args = parser.parse_args()
 
@@ -525,6 +549,7 @@ Examples:
             group_size=args.group_size,
             format=args.format,
             dtype=dtype,
+            quantize_pointwise=args.quantize_pointwise,
         )
 
         print(f"\n{'=' * 60}")

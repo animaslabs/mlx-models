@@ -65,6 +65,11 @@ COMPATIBILITY = {
 
 # parakeet-mlx and mlx-audio build pointwise convs as nn.Conv1d, which can't load
 # pointwise weights that were quantized as linear layers.
+PARAKEET_MLX_FAMILIES = {
+    family
+    for family, runtimes in COMPATIBILITY.items()
+    if runtimes["parakeet-mlx"][0] or runtimes["mlx-audio"][0]
+}
 QUANTIZED_POINTWISE_NOTE = "Pointwise convs are quantized as linear layers, which this runtime can't load"
 
 # mlx-voice-rs model type per family

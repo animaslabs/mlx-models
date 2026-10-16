@@ -66,6 +66,7 @@ uv run main.py nvidia/parakeet-tdt-0.6b-v3 -q 8 -o username/model -g 32 --privat
 | `--local-dir` | `-d` | Local directory for downloads (default: `models/<repo_id>`) |
 | `--private` | `-p` | Create private HuggingFace repos |
 | `--group-size` | `-g` | Quantization group size (default: 64) |
+| `--quantize-pointwise` / `--no-quantize-pointwise` | | Quantize pointwise convs as linear layers. Smaller, but parakeet-mlx and mlx-audio can't load it. Default: off for tdt/rnnt/ctc, on for other families |
 
 ### `hf.py` — HuggingFace Hub utilities
 
@@ -148,6 +149,6 @@ Current state of the [animaslabs](https://huggingface.co/animaslabs) speech repo
 
 Notes:
 
-- **Quantization layout.** The quantized parakeet-tdt, parakeet-rnnt and multitalker repos were built before pointwise convs were quantized, so their pointwise convs are unquantized and the LSTM is float32. The current converter quantizes pointwise convs as linear layers and stores the LSTM as float16, which is smaller but only loads in mlx-voice-rs: parakeet-mlx and mlx-audio build pointwise convs as `nn.Conv1d`. The nemotron repos use the current layout.
+- **Quantization layout.** The quantized parakeet-tdt, parakeet-rnnt and multitalker repos were built before pointwise convs were quantized, so their pointwise convs are unquantized and the LSTM is float32. The current converter stores the LSTM as float16, and for families parakeet-mlx or mlx-audio can run (tdt, rnnt, ctc) it leaves pointwise convs unquantized, because those runtimes build them as `nn.Conv1d`. For other families it quantizes pointwise convs as linear layers, which is smaller but only loads in mlx-voice-rs; the nemotron repos use that layout. Override with `--quantize-pointwise` / `--no-quantize-pointwise`.
 - **nemotron in mlx-audio.** mlx-audio can't read these repos' `config.json`, but it loads the original `nvidia/nemotron-speech-streaming-en-0.6b` directly.
 - **Compatibility on model cards** comes from `COMPATIBILITY` in `model_card.py`. Update it (and this table) when you re-check a runtime.
