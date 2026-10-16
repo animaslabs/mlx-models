@@ -121,6 +121,35 @@ uv run examples/transcribe.py --model username/model-mlx-8bit --quantized --bits
 uv run examples/transcribe.py --audio recording.wav
 ```
 
+### `samples/fetch_eval.py` — Download an evaluation set
+
+Downloads 13 clips with reference transcripts to `samples/eval/` (gitignored), as 16 kHz mono WAV + `.txt`, with a `manifest.jsonl`:
+
+| Category | Clips | Source |
+|----------|-------|--------|
+| Multilingual (~90 s each) | de, fr, es, it, pt, nl, pl | Multilingual LibriSpeech test |
+| Long-form, single speaker (~6 min) | 2 TED talks | TED-LIUM long-form |
+| Multi-speaker (3–22 min) | 2 earnings calls, 2 podcasts | Earnings-21, Rev16 |
+
+```bash
+uv run samples/fetch_eval.py
+```
+
+The built set is mirrored to the private HF dataset [`animaslabs/asr-eval`](https://huggingface.co/datasets/animaslabs/asr-eval), so other repos (e.g. mlx-voice-rs, via `cargo xtask download-eval`) test against identical audio. After changing the set, re-push and bump `EVAL_REVISION` in `samples/score.py` and in mlx-voice-rs `xtask/src/main.rs`:
+
+```bash
+uv run samples/fetch_eval.py --push animaslabs/asr-eval
+```
+
+### `samples/score.py` — Score hypotheses (WER)
+
+The one scorer for every port: normalizes reference and hypothesis with Whisper's normalizer (English for `en`, basic otherwise), then computes per-clip and per-category corpus WER with jiwer. Input is JSONL, one `{"name": ..., "text": ...}` per clip; pass several files to compare them side by side. References come from the pinned dataset revision.
+
+```bash
+uv run samples/score.py ../mlx-voice-rs/hypotheses.jsonl
+uv run samples/score.py rust.jsonl python.jsonl --json scores.json
+```
+
 ## Typical workflow
 
 ```bash

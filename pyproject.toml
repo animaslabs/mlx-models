@@ -7,6 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
     "datasets>=5.1.0",
     "huggingface-hub>=2.2.0",
+    "jiwer>=4.0.0",
     "mlx>=0.32.3",
     "mlx-audio>=0.5.9",
     "numpy<2.4",
