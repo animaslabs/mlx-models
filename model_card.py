@@ -17,7 +17,7 @@ GITHUB_REPO = "https://github.com/animaslabs/mlx-models"
 VOICE_RS_REPO = "https://github.com/animaslabs/mlx-voice-rs"
 VOICE_RS_CRATE = "mlx-voice"
 
-RUNTIMES = ["parakeet-mlx", "mlx-audio", "mlx-voice-rs"]
+RUNTIMES = ["mlx-voice-rs", "mlx-audio", "parakeet-mlx"]
 
 # Checked by transcribing samples/Speaker26_004_16k.wav with every published
 # repo in every runtime and comparing against a reference transcript.

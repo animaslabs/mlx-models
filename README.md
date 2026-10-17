@@ -196,13 +196,13 @@ uv run examples/transcribe.py \
 
 Current state of the [animaslabs](https://huggingface.co/animaslabs) speech repos, maintained by hand. Last checked 2026-10-14 by transcribing `samples/Speaker26_004_16k.wav` with each repo in each runtime (parakeet-mlx 0.5.3, mlx-audio 0.5.9, mlx-voice-rs `8a5b440`).
 
-| Model | Variants | parakeet-mlx | mlx-audio | mlx-voice-rs |
+| Model | Variants | mlx-voice-rs | mlx-audio | parakeet-mlx |
 |---|---|---|---|---|
-| [parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) | mlx, 8bit, 4bit | ✅ | ✅ | ❌ no TDT decoding |
+| [parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) | mlx, 8bit, 4bit | ❌ no TDT decoding | ✅ | ✅ |
 | [parakeet-rnnt-0.6b](https://huggingface.co/nvidia/parakeet-rnnt-0.6b) | mlx, 8bit, 4bit | ✅ | ✅ | ✅ |
-| [parakeet-ctc-0.6b](https://huggingface.co/nvidia/parakeet-ctc-0.6b) | mlx, pytorch | ✅ (mlx) | ✅ (mlx) | ✅ |
-| [nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | mlx, 8bit, 4bit | ❌ | ✅ | ✅ |
-| [multitalker-parakeet-streaming-0.6b-v1](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1) | mlx, 8bit, 4bit | ❌ | ❌ | 🚧 in progress |
+| [parakeet-ctc-0.6b](https://huggingface.co/nvidia/parakeet-ctc-0.6b) | mlx, pytorch | ✅ | ✅ (mlx) | ✅ (mlx) |
+| [nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | mlx, 8bit, 4bit | ✅ | ✅ | ❌ |
+| [multitalker-parakeet-streaming-0.6b-v1](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1) | mlx, 8bit, 4bit | 🚧 in progress | ❌ | ❌ |
 
 Notes:
 
