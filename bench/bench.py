@@ -37,8 +37,9 @@ from common import EVAL_DIR, load_clips  # noqa: E402
 # .nemo for mlx-voice-rs and NeMo, its unquantized MLX conversion for the MLX
 # libraries. `mode` indexes encoder.att_context_size (nemotron 0 = [70, 13] and
 # nemotron-3.5 3 = [56, 13]: 1.12 s chunks). `target_lang` is the language prompt
-# of a multilingual model ("auto" detects it) and `languages` picks the clips
-# (default English only; None = every language). A bare "mlx" name is a local
+# of a multilingual model ("auto" detects it; parakeet-tdt detects the language
+# without a prompt) and `languages` picks the clips (default English only;
+# None = every language). A bare "mlx" name is a local
 # conversion under models/; models without one skip the MLX libraries.
 # Offline runs use full attention over the whole file, so memory grows with the
 # square of the clip length: an 18 min clip peaks near 40 GB in mlx-voice-rs, and
@@ -50,6 +51,13 @@ MODELS = {
         "max_duration": 400,
         "nemo": ("nvidia/parakeet-rnnt-0.6b", "parakeet-rnnt-0.6b.nemo"),
         "mlx": "animaslabs/parakeet-rnnt-0.6b-mlx",
+    },
+    "parakeet-tdt": {
+        "streaming": False,
+        "max_duration": 400,
+        "languages": None,
+        "nemo": ("nvidia/parakeet-tdt-0.6b-v3", "parakeet-tdt-0.6b-v3.nemo"),
+        "mlx": "animaslabs/parakeet-tdt-0.6b-v3-mlx",
     },
     "nemotron": {
         "streaming": True,
