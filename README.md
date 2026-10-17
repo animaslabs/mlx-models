@@ -9,7 +9,7 @@ Convert NeMo speech recognition models to MLX format (optimized for Apple Silico
 
 ## Authentication
 
-Log in once with the HuggingFace CLI. You need this to upload to the Hub and to download the private [`animaslabs/asr-eval`](https://huggingface.co/datasets/animaslabs/asr-eval) dataset, and it raises download rate limits:
+Downloading public models and building the eval set don't need an account, but you need to log in to upload to the Hub, and logging in raises download rate limits. Log in once with the HuggingFace CLI:
 
 ```bash
 uv run hf auth login
@@ -148,9 +148,10 @@ uv run samples/fetch_eval.py --push animaslabs/asr-eval
 
 ### `samples/score.py` — Score hypotheses (WER)
 
-The one scorer for every port: normalizes reference and hypothesis with Whisper's normalizer (English for `en`, basic otherwise), then computes per-clip and per-category corpus WER with jiwer. Input is JSONL, one `{"name": ..., "text": ...}` per clip; pass several files to compare them side by side. References come from the pinned dataset revision.
+The one scorer for every port: normalizes reference and hypothesis with Whisper's normalizer (English for `en`, basic otherwise), then computes per-clip and per-category corpus WER with jiwer. Input is JSONL, one `{"name": ..., "text": ...}` per clip; pass several files to compare them side by side. By default, references come from the pinned revision of the private `animaslabs/asr-eval` dataset. Without access to it, build the set with `samples/fetch_eval.py` and pass `--eval-dir samples/eval`.
 
 ```bash
+uv run samples/score.py hyps.jsonl --eval-dir samples/eval   # local set from fetch_eval.py
 uv run samples/score.py ../mlx-voice-rs/hypotheses.jsonl
 uv run samples/score.py rust.jsonl python.jsonl --json scores.json
 ```
