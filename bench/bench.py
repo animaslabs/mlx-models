@@ -35,13 +35,15 @@ from common import EVAL_DIR, load_clips  # noqa: E402
 
 # Each model runs from the same full-precision weights everywhere: the original
 # .nemo for mlx-voice-rs and NeMo, its unquantized MLX conversion for the MLX
-# libraries. `mode` indexes encoder.att_context_size (0 = [70, 13], 1.12 s chunks).
+# libraries. `mode` indexes encoder.att_context_size (nemotron 0 = [70, 13] and
+# nemotron-3.5 3 = [56, 13]: 1.12 s chunks). `target_lang` is the language prompt
+# of a multilingual model ("auto" detects it) and `languages` picks the clips
+# (default English only; None = every language). A bare "mlx" name is a local
+# conversion under models/; models without one skip the MLX libraries.
 # Offline runs use full attention over the whole file, so memory grows with the
 # square of the clip length: an 18 min clip peaks near 40 GB in mlx-voice-rs, and
 # NeMo on MPS bogs the whole machine down on the 22 min clips. `max_duration`
-# keeps the default run light; --all-clips lifts it. `languages` picks the clips
-# (default English only; None = every language) and `target_lang` is the language
-# prompt of multilingual models, "auto" letting the model detect it per clip.
+# keeps the default run light; --all-clips lifts it.
 MODELS = {
     "parakeet-rnnt": {
         "streaming": False,
@@ -55,9 +57,8 @@ MODELS = {
         "nemo": ("nvidia/nemotron-speech-streaming-en-0.6b", "nemotron-speech-streaming-en-0.6b.nemo"),
         "mlx": "animaslabs/nemotron-speech-streaming-en-0.6b-mlx",
     },
-    # Multilingual successor with language-ID prompts; mode 3 = [56, 13], the same
-    # 1.12 s chunks as nemotron mode 0. Converted with mlx-audio's nemotron_asr
-    # converter (--dtype float32) into models/nemotron-3.5-asr-streaming-0.6b-mlx.
+    # Not on the Hub yet: convert with `python -m mlx_audio.stt.models.nemotron_asr.convert
+    # --nemo-path <.nemo> --mlx-path models/nemotron-3.5-asr-streaming-0.6b-mlx --dtype float32`.
     "nemotron-3.5": {
         "streaming": True,
         "mode": 3,
@@ -67,6 +68,7 @@ MODELS = {
         "mlx": "nemotron-3.5-asr-streaming-0.6b-mlx",
     },
 }
+MLX_LIBRARIES = ["parakeet-mlx", "mlx-audio"]
 LIBRARIES = ["mlx-voice-rs", "parakeet-mlx", "mlx-audio", "nemo"]
 GROUPS = ["multilingual", "long-form", "multi-speaker", "all"]
 
@@ -79,9 +81,13 @@ def nemo_path(spec) -> str:
     return hf_hub_download(spec[0], spec[1])
 
 
-def mlx_path(name: str) -> str:
+def mlx_path(spec) -> str | None:
     # A bare name is a local conversion under models/; anything else is a Hub id.
-    return name if "/" in name else str(ROOT / "models" / name)
+    name = spec.get("mlx")
+    if not name or "/" in name:
+        return name
+    local = ROOT / "models" / name
+    return str(local) if local.exists() else None
 
 
 def run_library(lib, key, spec, clips, args, out: Path) -> None:
@@ -91,8 +97,11 @@ def run_library(lib, key, spec, clips, args, out: Path) -> None:
         common += ["--clip", clip["name"]]
     if spec["streaming"]:
         common += ["--mode", str(spec.get("mode", 0))]
-    if spec.get("target_lang"):
+    if "target_lang" in spec:
         common += ["--target-lang", spec["target_lang"]]
+    if lib in MLX_LIBRARIES and not mlx_path(spec):
+        out.write_text(json.dumps({"library": lib, "model": key, "unsupported": "no MLX conversion"}) + "\n")
+        return
 
     if lib == "mlx-voice-rs":
         binary = args.rust_repo / "target" / "release" / "examples" / "eval"
@@ -100,7 +109,7 @@ def run_library(lib, key, spec, clips, args, out: Path) -> None:
         if not spec["streaming"]:
             cmd.append("--offline")
     else:
-        model = nemo_path(spec["nemo"]) if lib == "nemo" else mlx_path(spec["mlx"])
+        model = nemo_path(spec["nemo"]) if lib == "nemo" else mlx_path(spec)
         project = ["--project", str(BENCH / "nemo")] if lib == "nemo" else []
         cmd = ["uv", "run", *project, str(BENCH / "run.py"), "--library", lib,
                "--model", model, "--model-name", key] + common

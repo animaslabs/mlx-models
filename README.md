@@ -152,7 +152,7 @@ uv run samples/score.py rust.jsonl python.jsonl --json scores.json
 
 ### `bench/bench.py` — Benchmark against other runtimes
 
-Compares mlx-voice-rs, parakeet-mlx, mlx-audio and NVIDIA NeMo (PyTorch, MPS) on the eval set. It measures speed (model load time, wall time, RTF, and per-chunk latency when streaming) and WER, scored with `samples/score.py`. Two models are covered: parakeet-rnnt-0.6b offline and nemotron-speech-streaming-en-0.6b cache-aware streaming (mode 0 = `[70, 13]`). mlx-voice-rs and NeMo load the original `.nemo` file; the MLX libraries load the unquantized `animaslabs/*-mlx` conversions. Every library is timed from WAV path to text, after one untimed warm-up. A library that can't run a model is reported as n/a instead of failing the run. Offline parakeet-rnnt is limited to clips of 400 s or less by default, because whole-file full attention on the 18–22 min clips needs tens of GB (about 40 GB in mlx-voice-rs for 18 min) and NeMo on MPS bogs the machine down. Pass `--all-clips` to include them. The NeMo process also gets a hard MPS memory budget: 60% of RAM by default, or set `BENCH_NEMO_MEMORY_GB`. A clip that would go over it fails fast and is reported as an out-of-memory error, so it can't push the machine into swap.
+Compares mlx-voice-rs, parakeet-mlx, mlx-audio and NVIDIA NeMo (PyTorch, MPS) on the eval set. It measures speed (model load time, wall time, RTF, and per-chunk latency when streaming) and WER, scored with `samples/score.py`. Three models are covered: parakeet-rnnt-0.6b offline, nemotron-speech-streaming-en-0.6b cache-aware streaming (mode 0 = `[70, 13]`), and the multilingual nemotron-3.5-asr-streaming-0.6b cache-aware streaming (mode 3 = `[56, 13]`, the same 1.12 s chunks, with the `auto` language prompt). nemotron-3.5 runs on every clip, multilingual ones included, and its `<xx-XX>` language tags are stripped before scoring. Its MLX conversion isn't on the Hub yet, so mlx-audio runs it only from a local `models/nemotron-3.5-asr-streaming-0.6b-mlx` (`python -m mlx_audio.stt.models.nemotron_asr.convert --nemo-path <.nemo> --mlx-path models/nemotron-3.5-asr-streaming-0.6b-mlx --dtype float32`); without it the MLX libraries are reported as n/a. mlx-voice-rs and NeMo load the original `.nemo` file; the MLX libraries load the unquantized `animaslabs/*-mlx` conversions. Every library is timed from WAV path to text, after one untimed warm-up. A library that can't run a model is reported as n/a instead of failing the run. Offline parakeet-rnnt is limited to clips of 400 s or less by default, because whole-file full attention on the 18–22 min clips needs tens of GB (about 40 GB in mlx-voice-rs for 18 min) and NeMo on MPS bogs the machine down. Pass `--all-clips` to include them. The NeMo process also gets a hard MPS memory budget: 60% of RAM by default, or set `BENCH_NEMO_MEMORY_GB`. A clip that would go over it fails fast and is reported as an out-of-memory error, so it can't push the machine into swap.
 
 The script builds and runs `examples/eval` from a mlx-voice-rs checkout (`../mlx-voice-rs` by default; change it with `--rust-repo`). NeMo has its own Python 3.12 environment in `bench/nemo` because it doesn't support Python 3.14. Set it up once:
 
@@ -163,8 +163,9 @@ uv sync --project bench/nemo
 Then run:
 
 ```bash
-uv run bench/bench.py                                    # both models, the 6 English clips
+uv run bench/bench.py                                    # all models (English clips; every clip for nemotron-3.5)
 uv run bench/bench.py --model nemotron --only mlx-voice-rs --only nemo
+uv run bench/bench.py --model nemotron-3.5 --language en # English clips only
 uv run bench/bench.py --all-clips --repeats 3            # include the 18–22 min clips offline
 uv run bench/bench.py --report bench/results/<timestamp> # rebuild the report only
 ```

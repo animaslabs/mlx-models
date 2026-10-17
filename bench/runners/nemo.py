@@ -5,6 +5,10 @@ examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infe
 
 Runs on MPS when available (override with BENCH_NEMO_DEVICE=cpu).
 
+Prompt-conditioned multilingual models (nemotron-3.5-asr-streaming) take
+--target-lang (default auto). Their language tags (e.g. <en-US>) are stripped
+from the text, like NeMo's strip_lang_tags.
+
 Offline NeMo runs full attention over the whole file, so its memory grows with
 the square of the clip length: about 13 GB for 6 min, 69 GB for 18 min, and
 around 100 GB for the 22 min clips. PyTorch's MPS allocator lets a process grow
@@ -24,15 +28,15 @@ from pathlib import Path
 from common import Result, Runner, Unsupported
 
 
-# Language tag a prompt model emits after terminal punctuation (e.g. "<en-US>"),
-# removed like NeMo's strip_lang_tags=true.
-LANG_TAG = re.compile(r"\s*<[a-z]{2,3}-[A-Za-z]{2,4}>")
+# NeMo's default strip_lang_tags pattern (rnnt_decoding.py)
+LANG_TAG = re.compile(r"\s*<[a-z]{2}-[A-Z]{2}>")
 
 
 def _text(hyp) -> str:
     if isinstance(hyp, (list, tuple)):  # some versions return (best, all) or nested lists
         hyp = hyp[0]
-    return LANG_TAG.sub("", hyp if isinstance(hyp, str) else hyp.text).strip()
+    text = hyp if isinstance(hyp, str) else hyp.text
+    return LANG_TAG.sub("", text).strip()
 
 
 def _limit_mps_memory(torch) -> dict:
@@ -65,20 +69,19 @@ def load(args) -> Runner:
         raise Unsupported(f"load failed: {type(e).__name__}: {e}")
     model.eval()
 
-    # Multilingual prompt models (EncDecRNNTBPEModelWithPrompt) take the target
-    # language as a prompt key, "auto" for detection.
-    lang = {}
-    if args.target_lang:
-        if not hasattr(model, "set_inference_prompt"):
-            raise Unsupported(f"--target-lang {args.target_lang} given but the model takes no language prompt")
-        model.set_inference_prompt(args.target_lang)
-        lang = {"target_lang": args.target_lang}
-        extra["target_lang"] = args.target_lang
+    prompt = {}
+    if hasattr(model, "set_inference_prompt"):
+        target_lang = args.target_lang or "auto"
+        model.set_inference_prompt(target_lang)  # streaming skips the prompt without it
+        prompt = {"target_lang": target_lang}
+        extra["target_lang"] = target_lang
+    elif args.target_lang:
+        raise Unsupported("model has no language prompt")
 
     if not args.streaming:
         def transcribe(path: Path) -> Result:
             with torch.inference_mode():
-                out = model.transcribe([str(path)], batch_size=1, verbose=False, **lang)
+                out = model.transcribe([str(path)], batch_size=1, verbose=False, **prompt)
             return Result(_text(out[0] if isinstance(out, list) else out))
 
         return Runner(device=device, dtype="float32", transcribe=transcribe, extra=extra,
