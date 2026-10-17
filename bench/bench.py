@@ -35,7 +35,10 @@ from common import EVAL_DIR, load_clips  # noqa: E402
 
 # Each model runs from the same full-precision weights everywhere: the original
 # .nemo for mlx-voice-rs and NeMo, its unquantized MLX conversion for the MLX
-# libraries. `mode` indexes encoder.att_context_size (0 = [70, 13], 1.12 s chunks).
+# libraries. `mode` indexes encoder.att_context_size (nemotron 0 = [70, 13] and
+# nemotron-3.5 3 = [56, 13]: 1.12 s chunks). `target_lang` is the language prompt
+# of a multilingual model ("auto" detects it). Models without an "mlx"
+# conversion skip the MLX libraries.
 # Offline runs use full attention over the whole file, so memory grows with the
 # square of the clip length: an 18 min clip peaks near 40 GB in mlx-voice-rs, and
 # NeMo on MPS bogs the whole machine down on the 22 min clips. `max_duration`
@@ -53,7 +56,14 @@ MODELS = {
         "nemo": ("nvidia/nemotron-speech-streaming-en-0.6b", "nemotron-speech-streaming-en-0.6b.nemo"),
         "mlx": "animaslabs/nemotron-speech-streaming-en-0.6b-mlx",
     },
+    "nemotron-3.5": {
+        "streaming": True,
+        "mode": 3,
+        "target_lang": "auto",
+        "nemo": ("nvidia/nemotron-3.5-asr-streaming-0.6b", "nemotron-3.5-asr-streaming-0.6b.nemo"),
+    },
 }
+MLX_LIBRARIES = ["parakeet-mlx", "mlx-audio"]
 LIBRARIES = ["mlx-voice-rs", "parakeet-mlx", "mlx-audio", "nemo"]
 GROUPS = ["multilingual", "long-form", "multi-speaker", "all"]
 
@@ -73,6 +83,11 @@ def run_library(lib, key, spec, clips, args, out: Path) -> None:
         common += ["--clip", clip["name"]]
     if spec["streaming"]:
         common += ["--mode", str(spec.get("mode", 0))]
+    if "target_lang" in spec:
+        common += ["--target-lang", spec["target_lang"]]
+    if lib in MLX_LIBRARIES and "mlx" not in spec:
+        out.write_text(json.dumps({"library": lib, "model": key, "unsupported": "no MLX conversion"}) + "\n")
+        return
 
     if lib == "mlx-voice-rs":
         binary = args.rust_repo / "target" / "release" / "examples" / "eval"
