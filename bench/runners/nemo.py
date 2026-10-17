@@ -17,16 +17,22 @@ that clip's error.
 
 import gc
 import os
+import re
 import time
 from pathlib import Path
 
 from common import Result, Runner, Unsupported
 
 
+# Language tag a prompt model emits after terminal punctuation (e.g. "<en-US>"),
+# removed like NeMo's strip_lang_tags=true.
+LANG_TAG = re.compile(r"\s*<[a-z]{2,3}-[A-Za-z]{2,4}>")
+
+
 def _text(hyp) -> str:
     if isinstance(hyp, (list, tuple)):  # some versions return (best, all) or nested lists
         hyp = hyp[0]
-    return hyp if isinstance(hyp, str) else hyp.text
+    return LANG_TAG.sub("", hyp if isinstance(hyp, str) else hyp.text).strip()
 
 
 def _limit_mps_memory(torch) -> dict:
@@ -59,10 +65,20 @@ def load(args) -> Runner:
         raise Unsupported(f"load failed: {type(e).__name__}: {e}")
     model.eval()
 
+    # Multilingual prompt models (EncDecRNNTBPEModelWithPrompt) take the target
+    # language as a prompt key, "auto" for detection.
+    lang = {}
+    if args.target_lang:
+        if not hasattr(model, "set_inference_prompt"):
+            raise Unsupported(f"--target-lang {args.target_lang} given but the model takes no language prompt")
+        model.set_inference_prompt(args.target_lang)
+        lang = {"target_lang": args.target_lang}
+        extra["target_lang"] = args.target_lang
+
     if not args.streaming:
         def transcribe(path: Path) -> Result:
             with torch.inference_mode():
-                out = model.transcribe([str(path)], batch_size=1, verbose=False)
+                out = model.transcribe([str(path)], batch_size=1, verbose=False, **lang)
             return Result(_text(out[0] if isinstance(out, list) else out))
 
         return Runner(device=device, dtype="float32", transcribe=transcribe, extra=extra,

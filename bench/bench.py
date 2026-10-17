@@ -39,7 +39,9 @@ from common import EVAL_DIR, load_clips  # noqa: E402
 # Offline runs use full attention over the whole file, so memory grows with the
 # square of the clip length: an 18 min clip peaks near 40 GB in mlx-voice-rs, and
 # NeMo on MPS bogs the whole machine down on the 22 min clips. `max_duration`
-# keeps the default run light; --all-clips lifts it.
+# keeps the default run light; --all-clips lifts it. `languages` picks the clips
+# (default English only; None = every language) and `target_lang` is the language
+# prompt of multilingual models, "auto" letting the model detect it per clip.
 MODELS = {
     "parakeet-rnnt": {
         "streaming": False,
@@ -52,6 +54,17 @@ MODELS = {
         "mode": 0,
         "nemo": ("nvidia/nemotron-speech-streaming-en-0.6b", "nemotron-speech-streaming-en-0.6b.nemo"),
         "mlx": "animaslabs/nemotron-speech-streaming-en-0.6b-mlx",
+    },
+    # Multilingual successor with language-ID prompts; mode 3 = [56, 13], the same
+    # 1.12 s chunks as nemotron mode 0. Converted with mlx-audio's nemotron_asr
+    # converter (--dtype float32) into models/nemotron-3.5-asr-streaming-0.6b-mlx.
+    "nemotron-3.5": {
+        "streaming": True,
+        "mode": 3,
+        "languages": None,
+        "target_lang": "auto",
+        "nemo": ("nvidia/nemotron-3.5-asr-streaming-0.6b", "nemotron-3.5-asr-streaming-0.6b.nemo"),
+        "mlx": "nemotron-3.5-asr-streaming-0.6b-mlx",
     },
 }
 LIBRARIES = ["mlx-voice-rs", "parakeet-mlx", "mlx-audio", "nemo"]
@@ -66,6 +79,11 @@ def nemo_path(spec) -> str:
     return hf_hub_download(spec[0], spec[1])
 
 
+def mlx_path(name: str) -> str:
+    # A bare name is a local conversion under models/; anything else is a Hub id.
+    return name if "/" in name else str(ROOT / "models" / name)
+
+
 def run_library(lib, key, spec, clips, args, out: Path) -> None:
     common = ["--warmup", str(args.warmup), "--repeats", str(args.repeats),
               "--eval-dir", str(args.eval_dir), "--out", str(out)]
@@ -73,6 +91,8 @@ def run_library(lib, key, spec, clips, args, out: Path) -> None:
         common += ["--clip", clip["name"]]
     if spec["streaming"]:
         common += ["--mode", str(spec.get("mode", 0))]
+    if spec.get("target_lang"):
+        common += ["--target-lang", spec["target_lang"]]
 
     if lib == "mlx-voice-rs":
         binary = args.rust_repo / "target" / "release" / "examples" / "eval"
@@ -80,7 +100,7 @@ def run_library(lib, key, spec, clips, args, out: Path) -> None:
         if not spec["streaming"]:
             cmd.append("--offline")
     else:
-        model = nemo_path(spec["nemo"]) if lib == "nemo" else spec["mlx"]
+        model = nemo_path(spec["nemo"]) if lib == "nemo" else mlx_path(spec["mlx"])
         project = ["--project", str(BENCH / "nemo")] if lib == "nemo" else []
         cmd = ["uv", "run", *project, str(BENCH / "run.py"), "--library", lib,
                "--model", model, "--model-name", key] + common
@@ -140,7 +160,10 @@ def build_report(results_dir: Path, eval_dir: Path) -> None:
 
         spec = MODELS[key]
         groups = [g for g in GROUPS if any(g in e.get("wer", {}) for e in entries.values())]
-        md.append(f"\n## {key} ({'streaming, mode ' + str(spec.get('mode', 0)) if spec['streaming'] else 'offline'})\n")
+        mode = f"streaming, mode {spec.get('mode', 0)}" if spec["streaming"] else "offline"
+        if spec.get("target_lang"):
+            mode += f", target_lang {spec['target_lang']}"
+        md.append(f"\n## {key} ({mode})\n")
         cols = ["library", "device", "clips", "load s", "audio s", "elapsed s", "RTF", "× realtime"]
         if spec["streaming"]:
             cols += ["chunk ms mean", "chunk ms p95 (max)"]
@@ -194,7 +217,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--model", action="append", choices=MODELS, help="Only these models (repeatable)")
     parser.add_argument("--only", action="append", choices=LIBRARIES, help="Only these libraries (repeatable)")
-    parser.add_argument("--language", action="append", help="Clip languages (default: en)")
+    parser.add_argument("--language", action="append", help="Clip languages (default: each model's languages)")
     parser.add_argument("--clip", action="append", default=[], help="Only this clip (repeatable)")
     parser.add_argument("--max-duration", type=float, help="Skip clips longer than this (seconds)")
     parser.add_argument("--all-clips", action="store_true", help="Ignore each model's max_duration")
@@ -211,24 +234,27 @@ def main():
         build_report(args.report, args.eval_dir)
         return
 
-    clips = load_clips(args.eval_dir, args.language or ["en"], args.clip, args.max_duration)
-    if not clips:
+    models = args.model or list(MODELS)
+    clips = {key: load_clips(args.eval_dir, args.language or MODELS[key].get("languages", ["en"]) or [],
+                             args.clip, args.max_duration) for key in models}
+    if not any(clips.values()):
         raise SystemExit(f"no clips selected (run `uv run samples/fetch_eval.py` or "
                          f"`cargo xtask download-eval` for {args.eval_dir})")
     libraries = args.only or LIBRARIES
     results_dir = args.out_dir or BENCH / "results" / datetime.now().strftime("%Y%m%d-%H%M%S")
     results_dir.mkdir(parents=True, exist_ok=True)
-    print(f"{len(clips)} clips, {sum(c['duration'] for c in clips):.0f}s audio → {results_dir}")
+    print(f"results → {results_dir}")
 
     if "mlx-voice-rs" in libraries:
         subprocess.run(["cargo", "build", "--release", "--example", "eval",
                         "--manifest-path", str(args.rust_repo / "Cargo.toml")], check=True)
 
-    for key in args.model or list(MODELS):
+    for key in models:
         limit = None if args.all_clips else MODELS[key].get("max_duration")
-        model_clips = [c for c in clips if limit is None or c["duration"] <= limit]
-        if len(model_clips) < len(clips):
-            print(f"{key}: {len(model_clips)}/{len(clips)} clips (max_duration {limit}s; --all-clips for all)")
+        model_clips = [c for c in clips[key] if limit is None or c["duration"] <= limit]
+        print(f"{key}: {len(model_clips)}/{len(clips[key])} clips, "
+              f"{sum(c['duration'] for c in model_clips):.0f}s audio"
+              + (f" (max_duration {limit}s; --all-clips for all)" if len(model_clips) < len(clips[key]) else ""))
         for lib in libraries:
             run_library(lib, key, MODELS[key], model_clips, args, results_dir / f"{lib}__{key}.jsonl")
 
