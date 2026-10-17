@@ -14,7 +14,7 @@ Quantization notes:
 - Pointwise Conv1d (kernel=1) layers are optionally quantized: their weights are squeezed
   from 3D [O,I,1] to 2D [O,I] and quantized as linear layers. parakeet-mlx and mlx-audio
   build pointwise convs as nn.Conv1d and can't load this layout (see --no-quantize-pointwise)
-- LSTM weights are stored as float16 (not quantized)
+- LSTM weights are NOT quantized (kept as float32)
 - Depthwise/regular Conv1d weights are NOT quantized (kept as float32)
 - Scales/biases use float16 to save space
 
@@ -345,14 +345,11 @@ def convert_lstm_weights(
         if isinstance(weight_hh, torch.Tensor):
             weight_hh = weight_hh.detach().cpu().numpy()
 
-        # Store as float16 when quantizing (MLX matmul handles mixed precision natively)
-        # Otherwise keep as float32 for full-precision models
-        if quantize_bits is not None:
-            result[f"{prefix}.{layer_idx}.Wx"] = weight_ih.astype(np.float16)
-            result[f"{prefix}.{layer_idx}.Wh"] = weight_hh.astype(np.float16)
-        else:
-            result[f"{prefix}.{layer_idx}.Wx"] = weight_ih
-            result[f"{prefix}.{layer_idx}.Wh"] = weight_hh
+        # Store as float32, even when quantizing. The runtimes compute in float32, so
+        # float16 weights get upcast on every decoder step: ~5-10% slower decoding
+        # for a ~2% smaller file, with identical transcripts.
+        result[f"{prefix}.{layer_idx}.Wx"] = weight_ih.astype(np.float32)
+        result[f"{prefix}.{layer_idx}.Wh"] = weight_hh.astype(np.float32)
 
         # Combine biases (PyTorch has separate ih and hh biases)
         if bias_ih is not None and bias_hh is not None:

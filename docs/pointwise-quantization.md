@@ -89,7 +89,7 @@ The reshape is exact; the quantization is not, and its error is the same kind ev
 - **Lossy:** rounding to b bits. Each weight lands on the nearest of 2^b levels in its group, so it moves by at most half a step, s / 2. With 64 weights per group, one outlier widens the step for the other 63.
 - **Not measured yet:** how much accuracy the pointwise layers specifically lose. The 2026-10-14 compatibility check passed the nemotron 4-bit and 8-bit repos in mlx-voice-rs, but no WER comparison of pointwise quantized against unquantized has been run.
 
-The same pass stores LSTM weights as float16, a separate and much smaller rounding. A rebuilt tdt 4-bit with float16 LSTM gives the same transcript of the test sample as the published build in both parakeet-mlx and mlx-audio (first 120 characters compared).
+LSTM weights stay float32. Storing them as float16 was tried: a tdt 4-bit built that way transcribed all 13 eval clips identically to the float32 build in parakeet-mlx and mlx-audio, but decoded 5–10% slower (the runtimes compute in float32 and upcast the LSTM every step) to save 13 MB, about 2% of the file.
 
 ## Why runtimes disagree, and the flag
 
