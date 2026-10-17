@@ -29,6 +29,8 @@ def load(args) -> Runner:
         model = load_stt(args.model)
     except Exception as e:
         raise Unsupported(f"load failed: {type(e).__name__}: {e}")
+    # Multilingual Nemotron: language prompt key such as "en-US" or "auto".
+    lang = {"language": args.target_lang} if args.target_lang else {}
 
     if args.streaming:
         if not hasattr(model, "stream_generate") or not hasattr(model, "default_att_context_size"):
@@ -41,7 +43,7 @@ def load(args) -> Runner:
             # stream_generate yields once per native encoder chunk; time each step.
             steps, result = [], None
             t = time.perf_counter()
-            for result in model.stream_generate(path, att_context_size=att, dtype=dtype):
+            for result in model.stream_generate(path, att_context_size=att, dtype=dtype, **lang):
                 now = time.perf_counter()
                 steps.append(now - t)
                 t = now
@@ -49,10 +51,11 @@ def load(args) -> Runner:
 
         return Runner(device="metal", dtype=compute_dtype(model, dtype),
                       transcribe=transcribe, extra={"att_context_size": att,
-                                                    "input_dtype": str(dtype).removeprefix("mlx.core.")})
+                                                    "input_dtype": str(dtype).removeprefix("mlx.core."),
+                                                    "target_lang": args.target_lang})
 
     dtype = getattr(mx, args.dtype or "bfloat16")
-    kwargs = {"dtype": dtype}
+    kwargs = {"dtype": dtype, **lang}
     if hasattr(model, "default_att_context_size"):
         # Nemotron's generate chunks to 30s by default; run the whole file like the rest.
         kwargs["chunk_duration"] = None
