@@ -9,19 +9,24 @@ Convert NeMo speech recognition models to MLX format (optimized for Apple Silico
 
 ## Authentication
 
-Set your HuggingFace token for faster downloads and uploading to the Hub:
-
-```bash
-export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxx
-```
-
-Generate a token at https://huggingface.co/settings/tokens.
-
-Alternatively, log in once via the CLI:
+Downloading public models and building the eval set don't need an account, but you need to log in to upload to the Hub, and logging in raises download rate limits. Log in once with the HuggingFace CLI:
 
 ```bash
 uv run hf auth login
 ```
+
+Pick the browser login (the default). It saves a short-lived token that refreshes itself to `~/.cache/huggingface/token` (readable only by you), and every script here picks it up automatically. Check which account you're using with `uv run hf auth whoami`, and remove the token with `uv run hf auth logout`.
+
+If you paste an access token instead, create a [fine-grained token](https://huggingface.co/settings/tokens) with only the access you need: read for downloads, plus write to the namespace you publish to (e.g. `animaslabs`). Paste it at the hidden prompt, not with `--token`, so it stays out of your shell history.
+
+Don't `export HF_TOKEN=...` in your shell or put it in a dotfile. The token ends up in your shell history, every process you start inherits it, and it overrides the stored login. When something does need the variable, such as a headless machine, keep the token in a secret store and set it for that one command. On macOS, with the Keychain:
+
+```bash
+security add-generic-password -a "$USER" -s huggingface -w   # store once; prompts for the token
+HF_TOKEN="$(security find-generic-password -s huggingface -w)" uv run main.py ...
+```
+
+In CI, set `HF_TOKEN` from the platform's secret store (e.g. GitHub Actions secrets).
 
 ## Commands
 
@@ -143,9 +148,10 @@ uv run samples/fetch_eval.py --push animaslabs/asr-eval
 
 ### `samples/score.py` — Score hypotheses (WER)
 
-The one scorer for every port: normalizes reference and hypothesis with Whisper's normalizer (English for `en`, basic otherwise), then computes per-clip and per-category corpus WER with jiwer. Input is JSONL, one `{"name": ..., "text": ...}` per clip; pass several files to compare them side by side. References come from the pinned dataset revision.
+The one scorer for every port: normalizes reference and hypothesis with Whisper's normalizer (English for `en`, basic otherwise), then computes per-clip and per-category corpus WER with jiwer. Input is JSONL, one `{"name": ..., "text": ...}` per clip; pass several files to compare them side by side. By default, references come from the pinned revision of the private `animaslabs/asr-eval` dataset. Without access to it, build the set with `samples/fetch_eval.py` and pass `--eval-dir samples/eval`.
 
 ```bash
+uv run samples/score.py hyps.jsonl --eval-dir samples/eval   # local set from fetch_eval.py
 uv run samples/score.py ../mlx-voice-rs/hypotheses.jsonl
 uv run samples/score.py rust.jsonl python.jsonl --json scores.json
 ```
